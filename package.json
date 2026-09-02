@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "if [ -n \"$DATABASE_URL\" ]; then prisma db push --skip-generate && node scripts/seed-runtime.js; fi && next build",
     "start": "next start",
     "db:push": "prisma db push",
     "db:studio": "prisma studio",
