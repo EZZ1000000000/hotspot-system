@@ -9,7 +9,7 @@ function getConfig() {
   return {
     clientId:     process.env.GOOGLE_CLIENT_ID     || '',
     clientSecret: process.env.GOOGLE_CLIENT_SECRET || '',
-    baseUrl:      process.env.NEXTAUTH_URL          || 'https://babreizk.online',
+    baseUrl:      process.env.NEXTAUTH_URL          || 'https://hotspot-system-gamma.vercel.app',
   }
 }
 

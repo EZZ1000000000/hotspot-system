@@ -5,7 +5,7 @@ export const dynamic = 'force-dynamic'
 
 export async function GET(req: NextRequest) {
   const params = new URL(req.url).searchParams
-  const serverUrl = process.env.NEXT_PUBLIC_SERVER_URL || 'https://babreizk.online'
+  const serverUrl = process.env.NEXT_PUBLIC_SERVER_URL || new URL(req.url).origin
 
   const mac  = params.get('mac')   || ''
   const gwId = params.get('gw_id') || ''

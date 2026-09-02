@@ -6,8 +6,8 @@ const CFG = {
   port:    parseInt(process.env.SMTP_PORT || '587'),
   user:    process.env.SMTP_USER    || '',
   pass:    process.env.SMTP_PASS    || '',
-  from:    process.env.SMTP_FROM    || 'HotSpot Pro <noreply@babreizk.online>',
-  baseUrl: process.env.NEXTAUTH_URL || 'https://babreizk.online',
+  from:    process.env.SMTP_FROM    || 'HotSpot Pro <noreply@hotspot.local>',
+  baseUrl: process.env.NEXTAUTH_URL || 'https://hotspot-system-gamma.vercel.app',
 }
 
 // ── إرسال إيميل ──────────────────────────────────────────────────────────────
@@ -123,7 +123,7 @@ body{font-family:Arial,sans-serif;background:#f0f4f8;margin:0;padding:20px}
     </div>
     <p style="font-size:13px;color:#6b7280">لو مش أنت اللي سجّل — تجاهل الإيميل ده.</p>
   </div>
-  <div class="ftr">© ${new Date().getFullYear()} HotSpot Pro · babreizk.online</div>
+  <div class="ftr">© ${new Date().getFullYear()} HotSpot Pro</div>
 </div>
 </body></html>`
 }

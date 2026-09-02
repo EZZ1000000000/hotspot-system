@@ -16,7 +16,7 @@ function buildConf(d: {
     `AuthServer {`,
     `    Hostname        ${ip}`,
     `    HTTPPort        ${port}`,
-    `    SSLAvailable    ${ip === 'babreizk.online' || !ip.match(/^\d/) ? 'yes' : 'no'}`,
+    `    SSLAvailable    ${!ip.match(/^\d/) ? 'yes' : 'no'}`,
     `    Path            /api/wifidog/`,
     `}`,
     ``,
@@ -58,7 +58,7 @@ function buildScript(d: {
   const PORT       = String(port)
   const ROUT       = d.routerIp || '192.168.1.1'
   // tunnelPort = البورت الـ reverse tunnel بيتعلق عليه على السيرفر
-  // مثلاً 2201 يعني: ssh -p 22 root@babreizk.online → بيوصل للراوتر
+  // مثلاً 2201 يعني: reverse tunnel بورت 2201 على سيرفر SSH خارجي
   const TUNNEL_PORT   = String(d.tunnelPort || 0)
   const TUNNEL_SERVER = process.env.SSH_TUNNEL_HOST || ip
   // الـ tunnel محتاج سيرفر SSH حقيقي — بدون SSH_TUNNEL_HOST نتجاهله (مثلاً على Vercel)
@@ -299,7 +299,7 @@ export async function GET(req: NextRequest) {
     const p        = new URL(req.url).searchParams
     const deviceId = p.get('deviceId')
     const type     = p.get('type') || 'conf'
-    const serverIp  = process.env.SERVER_IP  || 'babreizk.online'
+    const serverIp  = process.env.SERVER_IP  || new URL(req.url).host
     const serverPort = parseInt(process.env.SERVER_PORT || '443')
 
     if (!deviceId)

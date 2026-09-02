@@ -60,7 +60,7 @@ export async function POST(req: NextRequest) {
     })
 
     // إرسال إيميل التأكيد
-    const baseUrl  = process.env.NEXTAUTH_URL || 'https://babreizk.online'
+    const baseUrl  = process.env.NEXTAUTH_URL || new URL(req.url).origin
     const verifyUrl = `${baseUrl}/api/verify-email?token=${verifyToken}`
 
     const emailSent = await sendEmail(

@@ -94,7 +94,7 @@ async function doLogin(){
       var gw=params.gw_address;
       var port=params.gw_port||'2060';
       if(gw){setTimeout(function(){window.location.replace('http://'+gw+':'+port+'/wifidog/auth?token='+token);},500);}
-      else{setTimeout(function(){window.location.href='https://babreizk.online/session?token='+token;},500);}
+      else{setTimeout(function(){window.location.href='/session?token='+token;},500);}
     }else{
       showError(data.message||'الكود غير صحيح أو منتهي الصلاحية');
       btn.disabled=false;btn.innerHTML='&#128275; تفعيل الكود';
