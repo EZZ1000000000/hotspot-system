@@ -23,7 +23,7 @@ function buildConf(d: {
     `GatewayPort         2060`,
     `HTTPDMaxConn        ${d.httpMaxConn}`,
     `ClientTimeout       ${d.clientTimeout}`,
-    `CheckInterval       60`,
+    `CheckInterval       120`,
     ``,
     `PopularServers      kernel.org,ieee.org`,
     ``,
