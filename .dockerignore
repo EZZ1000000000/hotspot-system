@@ -1,0 +1,15 @@
+node_modules
+.next
+.git
+.github
+data
+*.db
+*.db-journal
+*.log
+*.s3snap
+nohup.out
+docs
+deploy.sh
+render.yaml
+README.md
+.DS_Store
