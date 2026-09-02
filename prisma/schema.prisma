@@ -1,0 +1,439 @@
+// =============================================
+// Hotspot Management System - Prisma Schema
+// v3 — GroupQR + Sales + Reports + PWA
+// =============================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ─── السوبر أدمن ────────────────────────────
+model SuperAdmin {
+  id        String   @id @default(cuid())
+  username  String   @unique
+  password  String
+  email     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  hotspotAdmins HotspotAdmin[]
+  rewardTasks   RewardTask[]
+  groupQRCards  GroupQRCard[]
+}
+
+// ─── صاحب الكافيه ────────────────────────────
+model HotspotAdmin {
+  id       String  @id @default(cuid())
+  username String  @unique
+  password String
+  email    String  @unique
+  name     String
+  phone    String?
+
+  maxDevices             Int @default(1)
+  maxVouchersTotal       Int @default(100)
+  totalVouchersGenerated Int @default(0)
+
+  canCreateUnlimited Boolean @default(false)
+  canCreateNFC       Boolean @default(false)
+  canCreateQR        Boolean @default(false)
+  canRenewVouchers   Boolean @default(true)
+
+  isActive         Boolean  @default(true)
+  isEmailVerified  Boolean  @default(false)
+  emailVerifyToken String?
+  planName         String?  // مجاني | أساسي | احترافي | مؤسسي | مخصص
+  planNote         String?  // ملاحظة السوبر أدمن
+  planUpdatedAt    DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  superAdminId String
+  superAdmin   SuperAdmin @relation(fields: [superAdminId], references: [id])
+
+  devices       Device[]
+  vouchers      Voucher[]
+  saleRecords   SaleRecord[]
+  notifications Notification[]
+  planRequests   PlanRequest[]
+}
+
+// ─── الراوتر ─────────────────────────────────
+model Device {
+  id          String  @id @default(cuid())
+  name        String
+  gatewayId   String  @unique
+  location    String?
+  description String?
+
+  gatewayInterface  String @default("br-lan")
+  externalInterface String @default("eth0.1")
+  clientTimeout     Int    @default(10)
+  httpMaxConn       Int    @default(253)
+
+  routerIp      String  @default("192.168.1.1")
+  sshPort       Int     @default(22)
+  sshUsername   String  @default("root")
+  sshPassword   String?
+  wifiSSID      String?
+  wifiInterface String  @default("phy0-ap0")
+
+  // النفق العكسي — بورت فريد لكل جهاز على الـ VPS
+  // الراوتر بيفتح: ssh -R tunnelPort:localhost:22 root@VPS
+  // أنت بتدخل: ssh root@localhost -p tunnelPort
+  tunnelPort    Int?    // مثلاً: 2201, 2202, 2203...
+  sshPublicKey  String? // المفتاح العام للـ SSH (بيتولد أول مرة على الراوتر)
+
+  // صفحة البورتال المخصصة (HTML خالص)
+  portalHtml    String?
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  hotspotAdminId String
+  hotspotAdmin   HotspotAdmin @relation(fields: [hotspotAdminId], references: [id])
+
+  vouchers Voucher[]
+  sessions Session[]
+}
+
+// ─── الكارت العادي ───────────────────────────
+model Voucher {
+  id   String @id @default(cuid())
+  code String @unique
+
+  packageType  String  @default("BOTH")
+  voucherType  String  @default("STANDARD")
+
+  dataLimitMB    Int?
+  timeLimitMin   Int?
+  speedLimitMbps Float?
+  maxUsageCount  Int   @default(1)
+  usageCount     Int   @default(0)
+
+  dataUsedMB  Float @default(0)
+  timeUsedMin Float @default(0)
+
+  validityDays Int?
+  expiresAt    DateTime?
+
+  isRenewable   Boolean   @default(false)
+  renewCount    Int       @default(0)
+  lastRenewedAt DateTime?
+
+  status    String @default("UNUSED")
+  usedAt    DateTime?
+
+  printBatch String?
+
+  nfcPayload String?
+  qrPayload  String?
+
+  // ربط بـ SaleRecord لو اتباع
+  salePrice  Float?
+  saleId     String?
+  sale       SaleRecord? @relation(fields: [saleId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  deviceId String?
+  device   Device?  @relation(fields: [deviceId], references: [id])
+
+  hotspotAdminId String
+  hotspotAdmin   HotspotAdmin @relation(fields: [hotspotAdminId], references: [id])
+
+  sessions       Session[]
+  rewardEarnings RewardEarning[]
+}
+
+// ─── كارت QR جماعي (بيحتوي N كود) ──────────
+// المستخدم بيمسح QR واحد ويحصل على كود من الـ pool
+model GroupQRCard {
+  id          String  @id @default(cuid())
+  name        String  // "سكان عمارة A"
+  description String?
+
+  // الـ QR payload — URL يتجدد كل فترة
+  // /portal?gqr=TOKEN
+  qrToken     String  @unique @default(cuid())
+  qrImageUrl  String? // cached QR image base64
+
+  // صلاحية الـ QR نفسه (مش الكروت)
+  qrExpiresAt      DateTime
+  qrValidityDays   Int      @default(180)  // 6 شهور افتراضي
+  qrRenewalCount   Int      @default(0)
+  lastQrRenewedAt  DateTime?
+
+  // الكروت اللي في الـ pool
+  maxVouchers  Int   @default(100)  // الحد الأقصى للـ pool
+  usedCount    Int   @default(0)    // كام كود اتستخدم
+
+  // إعدادات الكروت اللي بيتولدوا تلقائي
+  voucherDataLimitMB  Int?
+  voucherTimeLimitMin Int?
+  voucherMaxUsage     Int  @default(1)
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  superAdminId String
+  superAdmin   SuperAdmin @relation(fields: [superAdminId], references: [id])
+
+  // الكروت المرتبطة
+  vouchers     GroupQRVoucher[]
+}
+
+// ─── كروت داخل الـ GroupQR ───────────────────
+model GroupQRVoucher {
+  id         String  @id @default(cuid())
+  code       String  @unique
+
+  // كام استخدام اتعمل
+  usedCount  Int     @default(0)
+  maxUsage   Int     @default(1)
+
+  isActive   Boolean  @default(true)
+  usedAt     DateTime?
+  expiresAt  DateTime?
+
+  groupQRId  String
+  groupQR    GroupQRCard @relation(fields: [groupQRId], references: [id])
+
+  createdAt DateTime @default(now())
+}
+
+// ─── سجل البيع ───────────────────────────────
+model SaleRecord {
+  id          String   @id @default(cuid())
+  invoiceNo   String   @unique @default(uuid())
+
+  customerName  String?
+  customerPhone String?
+  notes         String?
+
+  totalAmount  Float
+  paidAmount   Float  @default(0)
+  discount     Float  @default(0)
+
+  paymentMethod String @default("CASH")
+  status        String @default("PENDING")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  hotspotAdminId String
+  hotspotAdmin   HotspotAdmin @relation(fields: [hotspotAdminId], references: [id])
+
+  vouchers Voucher[]  // الكروت اللي اتباعت في الفاتورة دي
+}
+
+// ─── الجلسة ──────────────────────────────────
+model Session {
+  id    String @id @default(cuid())
+  token String @unique @default(cuid())
+
+  macAddress String
+  ipAddress  String
+  hostname   String?
+
+  dataInMB    Float @default(0)
+  dataOutMB   Float @default(0)
+  timeUsedMin Float @default(0)
+
+  status    String @default("ACTIVE")
+  startedAt DateTime      @default(now())
+  endedAt   DateTime?
+  endReason String?
+
+  lastPingAt  DateTime @default(now())
+  entryMethod String?  // VOUCHER | QR | NFC
+
+  deviceId  String
+  device    Device @relation(fields: [deviceId], references: [id])
+
+  voucherId String
+  voucher   Voucher @relation(fields: [voucherId], references: [id])
+
+  rewardEarnings RewardEarning[]
+}
+
+// ─── مهام المكافآت ────────────────────────────
+model RewardTask {
+  id             String  @id @default(cuid())
+  title          String
+  description    String?
+  url            String
+  callbackSecret String
+
+  rewardType     String
+  rewardTimeMins Int?
+  rewardDataMB   Int?
+
+  level         Int     @default(1)
+  requiredCount Int     @default(1)
+
+  isActive  Boolean  @default(true)
+  order     Int      @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  superAdminId String
+  superAdmin   SuperAdmin @relation(fields: [superAdminId], references: [id])
+
+  earnings RewardEarning[]
+}
+
+// ─── سجل المكافآت ────────────────────────────
+model RewardEarning {
+  id         String @id @default(cuid())
+  macAddress String
+  sessionId  String?
+  session    Session? @relation(fields: [sessionId], references: [id])
+  voucherId  String?
+  voucher    Voucher? @relation(fields: [voucherId], references: [id])
+  taskId     String
+  task       RewardTask @relation(fields: [taskId], references: [id])
+  addedTimeMins    Int?
+  addedDataMB      Int?
+  callbackToken    String    @unique
+  callbackReceived Boolean   @default(false)
+  callbackAt       DateTime?
+  createdAt        DateTime  @default(now())
+}
+
+// ─── سجل العمليات ────────────────────────────
+model AuditLog {
+  id         String   @id @default(cuid())
+  action     String
+  entityType String
+  entityId   String?
+  actorType  String
+  actorId    String?
+  details    String?
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+}
+
+// ─── WiFi Change Log ─────────────────────────
+model WifiChangeLog {
+  id        String   @id @default(cuid())
+  deviceId  String
+  oldSSID   String?
+  newSSID   String
+  success   Boolean
+  error     String?
+  createdAt DateTime @default(now())
+}
+
+// =============================================
+// ENUMS — محفوظة كـ String للتوافق مع SQLite
+// PackageType:   DATA_ONLY | TIME_ONLY | BOTH | UNLIMITED
+// VoucherType:   STANDARD | NFC | QR | UNLIMITED
+// VoucherStatus: UNUSED | ACTIVE | EXPIRED | DEPLETED | RENEWED | DISABLED
+// SessionStatus: ACTIVE | ENDED | KICKED | TIMEOUT
+// EndReason:     DATA_DEPLETED | TIME_EXPIRED | ADMIN_KICK | IDLE_TIMEOUT | USER_LOGOUT | SYSTEM
+// RewardType:    EXTRA_TIME | EXTRA_DATA | BOTH
+// PaymentMethod: CASH | CARD | TRANSFER | OTHER
+// SaleStatus:    PENDING | PAID | CANCELLED
+// =============================================
+
+// ─── الإشعارات ──────────────────────────────
+model Notification {
+  id        String   @id @default(cuid())
+  type      String   // VOUCHER_LOW | DEVICE_DOWN | DEVICE_UP | WELCOME | PLAN_LIMIT
+  title     String
+  body      String
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  hotspotAdminId String
+  hotspotAdmin   HotspotAdmin @relation(fields: [hotspotAdminId], references: [id])
+}
+
+// ─── طلبات الباقات ──────────────────────────
+model PlanRequest {
+  id             String   @id @default(cuid())
+  planId         String   // free | basic | pro | enterprise
+  planName       String
+  note           String?  // ملاحظة من الأدمن
+  receiptText    String?  // بيانات الحوالة / الإيصال
+  receiptImageUrl String? // صورة التحويل (base64 أو URL)
+  status         String   @default("PENDING") // PENDING | APPROVED | REJECTED
+  reviewNote     String?  // ملاحظة السوبر عند الرفض
+  reviewedAt     DateTime?
+  createdAt      DateTime @default(now())
+
+  hotspotAdminId String
+  hotspotAdmin   HotspotAdmin @relation(fields: [hotspotAdminId], references: [id])
+}
+
+// ─── الباقات ──────────────────────────────────
+model Plan {
+  id          String   @id @default(cuid())
+  name        String   // احترافي | أساسي ...
+  emoji       String   @default("🎯")
+  color       String   @default("#0088CC")
+  price       Float    @default(0)  // السعر الشهري
+  maxDevices          Int     @default(1)
+  maxVouchersTotal    Int     @default(100)
+  canCreateUnlimited  Boolean @default(false)
+  canCreateNFC        Boolean @default(false)
+  canCreateQR         Boolean @default(false)
+  canRenewVouchers    Boolean @default(true)
+  isActive    Boolean  @default(true)
+  order       Int      @default(0)  // ترتيب العرض
+  description String?  // وصف للأدمنز
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// جدول عام لحفظ بيانات السوبر أدمن (شيتس الحسابات)
+model KeyValueStore {
+  key       String   @id
+  value     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ─── عروض CPA (من CPAGrip / OGAds / AdGate / إلخ) ──
+model CpaOffer {
+  id          String   @id @default(cuid())
+  externalId  String
+  source      String   // cpagrip | ogads | adgate | lootably
+  title       String
+  description String?
+  url         String
+  payout      Float    @default(0)
+  category    String?
+  countries   String?  // "EG,SA,AE" أو "ALL"
+  imageUrl    String?
+  isActive    Boolean  @default(true)
+  lastFetchAt DateTime @default(now())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([source, externalId])
+}
+
+// ─── إعدادات مصادر الـ CPA ───────────────────────
+model CpaSource {
+  id        String   @id @default(cuid())
+  name      String   @unique  // cpagrip | ogads
+  label     String            // CPAGrip | OGAds
+  userId    String?
+  apiKey    String?
+  pubKey    String?
+  isActive  Boolean  @default(true)
+  lastSync  DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}

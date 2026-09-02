@@ -1,0 +1,27 @@
+module.exports = {
+  apps: [{
+    name: 'hotspot',
+    script: 'node_modules/.bin/next',
+    args: 'start',
+    cwd: '/home/ubuntu/hotspot2',
+    instances: 1,
+    autorestart: true,
+    watch: false,
+    max_memory_restart: '400M',
+    env: {
+      NODE_ENV: 'production',
+      PORT: 3000,
+      DATABASE_URL: 'postgresql://hotspot:hotspot2024@localhost:5432/hotspotdb',
+      NEXTAUTH_SECRET: 'hotspot-secret-2024',
+      NEXTAUTH_URL: 'https://babreizk.online',
+      SERVER_IP: 'babreizk.online',
+      SERVER_PORT: '443',
+      SMTP_HOST: 'smtp.gmail.com',
+      SMTP_PORT: '587',
+      SMTP_USER: '4ahmedesampranks@gmail.com',
+      SMTP_PASS: 'fifhvrnrantbmfti',
+      GOOGLE_CLIENT_ID: 'REPLACE_WITH_GOOGLE_CLIENT_ID',
+      GOOGLE_CLIENT_SECRET: 'REPLACE_WITH_GOOGLE_SECRET',
+    },
+  }],
+}
