@@ -23,7 +23,7 @@ RUN npx prisma generate && NEXT_TELEMETRY_DISABLED=1 npx next build
 # ── runtime defaults (يمكن تغييرها من Space Secrets) ──
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
-    PORT=7860 \
+    PORT=3000 \
     HOSTNAME=0.0.0.0 \
     DATABASE_URL=file:/data/hotspot.db \
     NEXTAUTH_SECRET=hf-space-hotspot-secret-change-me \
@@ -32,6 +32,6 @@ ENV NODE_ENV=production \
     SUPER_ADMIN_EMAIL=admin@hotspot.local \
     CRON_SECRET=hotspot-cron-2024
 
-EXPOSE 7860
+EXPOSE 3000
 
 CMD ["bash", "start.sh"]

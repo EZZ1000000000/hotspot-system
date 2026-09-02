@@ -46,5 +46,5 @@ else
 fi
 
 # ── تشغيل ──
-echo "> starting server on port ${PORT:-7860}..."
+echo "> starting server on port ${PORT:-3000}..."
 exec node server.js
