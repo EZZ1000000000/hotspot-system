@@ -1,0 +1,9 @@
+data
+*.db
+*.db-journal
+*.s3snap
+node_modules
+.next
+docs
+.github
+nohup.out
