@@ -6,3 +6,6 @@ hotspot.db
 *.db-journal
 .env.local
 .DS_Store
+data/
+*.s3snap
+nohup.out

@@ -26,6 +26,12 @@ CODE=$(curl -s -o /tmp/hs_create.json -w "%{http_code}" -X POST https://huggingf
   -d "{\"type\":\"space\",\"name\":\"$SPACE_NAME\",\"sdk\":\"$SPACE_SDK\",\"private\":false}")
 if [ "$CODE" = "201" ]; then echo "   تم إنشاء Space ✓"
 elif grep -q "already exists" /tmp/hs_create.json 2>/dev/null; then echo "   Space موجود بالفعل — هنعمل push عليه ✓"
+elif grep -q "PRO subscription" /tmp/hs_create.json 2>/dev/null; then
+  echo ""
+  echo "   ❌ Hugging Face المجاني بيسمح فقط بـ Static Spaces"
+  echo "   تشغيل Docker/Gradio Spaces محتاج اشتراك PRO (https://huggingface.co/pro)"
+  echo "   بعد الاشتراك: أعد تشغيل نفس الأمر وكل هيشتغل فوراً"
+  exit 1
 else echo "   رد غير متوقع:"; cat /tmp/hs_create.json; fi
 
 echo "── 3) تجهيز git ──"
@@ -38,7 +44,7 @@ git remote remove hf 2>/dev/null || true
 git remote add hf "https://$USER:$HF_TOKEN@huggingface.co/spaces/$USER/$SPACE_NAME"
 
 echo "── 4) رفع الكود ──"
-git push -f hf master:main 2>&1 | grep -vE "^(remote: )?(Resolving|Writing|Counting|Compressing|Delta)" || true
+git push -f hf HEAD:main 2>&1 | grep -vE "^(remote: )?(Resolving|Writing|Counting|Compressing|Delta)" || true
 
 echo ""
 echo "════════════════════════════════════════════════"

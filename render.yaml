@@ -1,0 +1,40 @@
+# ══════════════════════════════════════════════════════════════
+# Render.com Blueprint — نشر بضغطة واحدة (الخطة المجانية بدون فيزا)
+# يُستخدم تلقائياً عند: New + → Blueprint → اختيار المستودع
+# ══════════════════════════════════════════════════════════════
+services:
+  - type: web
+    name: hotspot-system
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    autoDeploy: true
+    dockerCommand: bash start.sh
+    envVars:
+      # قاعدة البيانات داخل الحاوية (تُستعاد تلقائياً من S3 عند كل تشغيل)
+      - key: DATABASE_URL
+        value: file:/app/data/hotspot.db
+      - key: NODE_ENV
+        value: production
+      - key: S3_ENDPOINT
+        value: https://s3.hf.co
+      - key: S3_OBJECT_KEY
+        value: hotspot.db
+      # توليد تلقائي بأمان
+      - key: NEXTAUTH_SECRET
+        generateValue: true
+      - key: CRON_SECRET
+        generateValue: true
+      # ⬇️ تُملأ يدوياً من لوحة Render بعد أول نشر (لا تُخزن هنا لأمانك)
+      - key: SUPER_ADMIN_USERNAME
+        sync: false
+      - key: SUPER_ADMIN_PASSWORD
+        sync: false
+      - key: SUPER_ADMIN_EMAIL
+        sync: false
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false

@@ -1,0 +1,23 @@
+# إبقاء الخدمة مستيقظة على الخطة المجانية (Render تنام بعد 15 دقيقة بلا زيارات)
+# الإعداد مرة واحدة بعد النشر:
+#   GitHub → المستودع → Settings → Secrets and variables → Actions → Variables (New)
+#   الاسم: RENDER_URL   القيمة: https://your-app.onrender.com
+name: keep-warm
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch: {}
+permissions: {}
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /api/health
+        run: |
+          URL="${{ vars.RENDER_URL }}"
+          if [ -z "$URL" ]; then echo "RENDER_URL غير مضبوط — تخطي"; exit 0; fi
+          for i in 1 2 3; do
+            if curl -fsS --max-time 60 "$URL/api/health"; then echo; echo "warm ✓"; exit 0; fi
+            echo "محاولة $i فشلت — إعادة بعد 30 ثانية (قد تكون الخدمة تستيقظ)"; sleep 30
+          done
+          echo "لم تستجب — غالباً لا يزال الاستيقاظ جارياً"; exit 0
