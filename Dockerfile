@@ -4,8 +4,8 @@
 # ══════════════════════════════════════════════════════════════
 FROM node:20-slim
 
-# openssl needed by Prisma engines
-RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates bash \
+# openssl for Prisma + build tools as fallback for ssh2 native compile
+RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates bash python3 make g++ \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
