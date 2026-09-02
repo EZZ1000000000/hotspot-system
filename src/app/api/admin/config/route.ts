@@ -59,8 +59,10 @@ function buildScript(d: {
   const ROUT       = d.routerIp || '192.168.1.1'
   // tunnelPort = البورت الـ reverse tunnel بيتعلق عليه على السيرفر
   // مثلاً 2201 يعني: ssh -p 22 root@babreizk.online → بيوصل للراوتر
-  const TUNNEL_PORT = String(d.tunnelPort || 0)
-  const HAS_TUNNEL  = d.tunnelPort && d.tunnelPort > 0
+  const TUNNEL_PORT   = String(d.tunnelPort || 0)
+  const TUNNEL_SERVER = process.env.SSH_TUNNEL_HOST || ip
+  // الـ tunnel محتاج سيرفر SSH حقيقي — بدون SSH_TUNNEL_HOST نتجاهله (مثلاً على Vercel)
+  const HAS_TUNNEL    = !!(d.tunnelPort && d.tunnelPort > 0 && process.env.SSH_TUNNEL_HOST)
 
   const confLines = buildConf(d, ip, port)
     .split('\n')
@@ -89,7 +91,7 @@ fi
 echo ""
 echo "╔══════════════════════════════════════════════════════════╗"
 echo "║  Public Key — ضيفه على السيرفر:                         ║"
-echo "║  ssh ubuntu@${IP} 'echo \"\$PUB_KEY\" >> ~/.ssh/authorized_keys' ║"
+echo "║  ssh ubuntu@${TUNNEL_SERVER} 'echo \"\$PUB_KEY\" >> ~/.ssh/authorized_keys' ║"
 echo "╚══════════════════════════════════════════════════════════╝"
 echo "\$PUB_KEY"
 echo ""
@@ -98,7 +100,7 @@ echo ""
 cat > /usr/bin/hotspot-tunnel << 'TUNNEL_EOF'
 #!/bin/sh
 # SSH Reverse Tunnel — يحفظ الاتصال دايماً
-SERVER="${IP}"
+SERVER="${TUNNEL_SERVER}"
 TUNNEL_PORT="${TUNNEL_PORT}"
 KEY_FILE="/etc/ssh/hotspot_rsa"
 
@@ -277,7 +279,7 @@ echo "╚═══════════════════════�
 ${HAS_TUNNEL ? `echo ""
 echo "╔══════════════════════════════════════════════════════════╗"
 echo "║  الدخول للراوتر من أي مكان:                             ║"
-echo "║  ssh -J ubuntu@${IP} -p ${TUNNEL_PORT} root@localhost    ║"
+echo "║  ssh -J ubuntu@${TUNNEL_SERVER} -p ${TUNNEL_PORT} root@localhost    ║"
 echo "║  أو من السيرفر مباشرة:                                  ║"
 echo "║  ssh -p ${TUNNEL_PORT} root@localhost                    ║"
 echo "╚══════════════════════════════════════════════════════════╝"` : ''}
