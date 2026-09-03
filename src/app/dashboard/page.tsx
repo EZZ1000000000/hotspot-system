@@ -381,16 +381,15 @@ function PlanRequestTab({ adminId }: { adminId: string }) {
 }
 
 function RouterSetupTab({ devices }: { devices: Device[] }) {
-  const [sel,setSel]=useState<Device|null>(null); const [copied,setCopied]=useState(''); const [showConf,setShowConf]=useState(false)
-  const [scriptText,setScriptText]=useState(''); const [fixText,setFixText]=useState(''); const [tabKind,setTabKind]=useState<'fix'|'install'>('fix')
+  const [sel,setSel]=useState<Device|null>(null); const [copied,setCopied]=useState('')
+  const [scriptText,setScriptText]=useState('')
 
-  // نجيب السكربتات الرسمية من السيرفر — مصدر واحد للحقيقة
-  // (الجسر المحلي + wifidog.conf الصحيح — بيصلح خطأ "We did not get a valid answer")
+  // السكربت الرسمي الموحد من السيرفر — مصدر واحد للحقيقة
+  // (سكربت واحد لكل حاجة: تسطيب + جسر HTTPS + إصلاح التفعيل + SSID + اختبار ذاتي)
   useEffect(()=>{
     if(!sel) return
-    setScriptText(''); setFixText('')
+    setScriptText('')
     fetch(`/api/admin/config?deviceId=${sel.id}&type=script`).then(r=>r.text()).then(setScriptText).catch(()=>{})
-    fetch(`/api/admin/config?deviceId=${sel.id}&type=relay-fix`).then(r=>r.text()).then(setFixText).catch(()=>{})
   },[sel?.id])
 
   const copy=async(text:string,id:string)=>{try{await navigator.clipboard.writeText(text)}catch(e){const ta=document.createElement('textarea');ta.value=text;document.body.appendChild(ta);ta.select();document.execCommand('copy');document.body.removeChild(ta)};setCopied(id);setTimeout(()=>setCopied(''),2500)}
@@ -403,7 +402,7 @@ function RouterSetupTab({ devices }: { devices: Device[] }) {
       {devices.length>1&&(
         <div style={{display:'flex',flexWrap:'wrap',gap:8,marginBottom:14}}>
           {devices.map(d=>(
-            <button key={d.id} onClick={()=>{setSel(d);setShowConf(false)}} style={{padding:'10px 18px',borderRadius:10,cursor:'pointer',fontFamily:'Cairo,sans-serif',fontSize:13,fontWeight:700,background:sel?.id===d.id?'linear-gradient(135deg,#0088CC,#00D4FF)':'#0C1420',border:`1px solid ${sel?.id===d.id?'#00D4FF':'#1C2A40'}`,color:sel?.id===d.id?'#000':'#6B8CAE',display:'flex',alignItems:'center',gap:8}}>
+            <button key={d.id} onClick={()=>{setSel(d)}} style={{padding:'10px 18px',borderRadius:10,cursor:'pointer',fontFamily:'Cairo,sans-serif',fontSize:13,fontWeight:700,background:sel?.id===d.id?'linear-gradient(135deg,#0088CC,#00D4FF)':'#0C1420',border:`1px solid ${sel?.id===d.id?'#00D4FF':'#1C2A40'}`,color:sel?.id===d.id?'#000':'#6B8CAE',display:'flex',alignItems:'center',gap:8}}>
               <span style={{width:8,height:8,borderRadius:'50%',background:d.isActive?'#00E676':'#FF4444',display:'inline-block'}}/>{d.name}
             </button>
           ))}
@@ -431,53 +430,32 @@ function RouterSetupTab({ devices }: { devices: Device[] }) {
               </div>
             </div>
 
-            {/* اختيار نوع السكريبت */}
-            <div style={{display:'flex',gap:8,marginBottom:12}}>
-              <button onClick={()=>setTabKind('fix')} style={{padding:'10px 18px',borderRadius:10,cursor:'pointer',fontFamily:'Cairo,sans-serif',fontSize:13,fontWeight:800,background:tabKind==='fix'?'linear-gradient(135deg,#FF6B35,#FF9800)':'#0C1420',border:`1px solid ${tabKind==='fix'?'#FF9800':'#1C2A40'}`,color:tabKind==='fix'?'#000':'#6B8CAE'}}>🚑 إصلاح مشكلة الاتصال</button>
-              <button onClick={()=>setTabKind('install')} style={{padding:'10px 18px',borderRadius:10,cursor:'pointer',fontFamily:'Cairo,sans-serif',fontSize:13,fontWeight:700,background:tabKind==='install'?'linear-gradient(135deg,#0088CC,#00D4FF)':'#0C1420',border:`1px solid ${tabKind==='install'?'#00D4FF':'#1C2A40'}`,color:tabKind==='install'?'#000':'#6B8CAE'}}>⚡ تسطيب جديد كامل</button>
+            {/* السكربت الموحد الشامل — سكربت واحد لكل حاجة */}
+            <div style={{...S.card,marginBottom:12,border:'1.5px solid rgba(0,212,255,0.35)'}}>
+              <div style={{fontSize:15,fontWeight:800,color:'#00D4FF',marginBottom:8}}>🚀 السكربت الشامل الموحد — تسطيب + إصلاح في سكربت واحد</div>
+              <div style={{fontSize:12,color:'#6B8CAE',lineHeight:2,marginBottom:12}}>
+                ده <strong style={{color:'#E2F0FB'}}>السكريبت الوحيد</strong> اللي محتاجه لأي جهاز — جديد أو قديم فيه مشكلة:
+                بيسطّب wifidog + جسر HTTPS محلي، يكتب الإعدادات الصحيحة، يغيّر اسم الشبكة (2.4GHz و 5GHz)، ينضّف أي إصلاحات قديمة،
+                وبيقيس كل حاجة بنفسه في الآخر ويقولك النتيجة.
+                <br/>✅ بيصلح نهائياً خطأ <strong style={{color:'#E2F0FB'}}>Error: We did not get a valid answer from the central server</strong>
+                &nbsp;·&nbsp;✅ آمن لإعادة التشغيل — ينفع يتعمل run أكتر من مرة
+              </div>
+              <div style={{background:'rgba(0,0,0,0.3)',borderRadius:10,padding:'10px 14px',marginBottom:12,fontSize:12,color:'#E2F0FB',lineHeight:2.2}}>
+                <strong style={{color:'#00D4FF'}}>طريقة التشغيل — 3 خطوات:</strong><br/>
+                1️⃣ من كمبيوتر متصل بنفس شبكة الراوتر: <code style={{background:'#020608',padding:'2px 8px',borderRadius:6,color:'#7dd3fc',direction:'ltr',display:'inline-block'}}>ssh root@{d.routerIp||'192.168.1.1'}</code><br/>
+                2️⃣ الصق الأمر ده واضغط Enter:<br/>
+                <code style={{background:'#020608',padding:'4px 8px',borderRadius:6,color:'#7dd3fc',direction:'ltr',display:'block',marginTop:6,whiteSpace:'pre-wrap',wordBreak:'break-all'}}>wget -q -O /tmp/hotspot.sh "https://{typeof window!=='undefined'?window.location.host:''}/api/admin/config?deviceId={d.id}&type=script" && sh /tmp/hotspot.sh</code><br/>
+                3️⃣ استنى كل الاختبارات ✅ (لازم تشوف: 🎉 النتيجة: كل حاجة تمام) — وبعدها اعزل الواي فاي من الموبايل وارجع اتصل وادخل الكرت
+              </div>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,flexWrap:'wrap',gap:8}}>
+                <div style={{fontSize:12,color:'#6B8CAE'}}>محتوى السكريبت {scriptText?`(${Math.round(scriptText.length/1024)}KB)`:''}</div>
+                <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                  <button onClick={()=>copy(scriptText,'cmds-'+d.id)} style={{...S.btn(copied==='cmds-'+d.id?'#00E676':'linear-gradient(135deg,#0088CC,#00D4FF)',copied==='cmds-'+d.id?'#000':'#000'),padding:'8px 16px',fontSize:12}}>{copied==='cmds-'+d.id?'✅ تم النسخ':'📋 نسخ السكريبت'}</button>
+                  <button onClick={()=>download(scriptText,`install-${d.gatewayId}.sh`)} style={{...S.btn('#0C1420','#6B8CAE'),border:'1px solid #1C2A40',fontSize:11,padding:'6px 12px'}}>⬇️ تحميل</button>
+                </div>
+              </div>
+              <pre style={{background:'#020608',border:'1px solid #0C1420',borderRadius:10,padding:14,fontFamily:'JetBrains Mono,monospace',fontSize:11,color:'#7dd3fc',lineHeight:1.8,overflowX:'auto',maxHeight:380,direction:'ltr',textAlign:'left',margin:0,whiteSpace:'pre-wrap',wordBreak:'break-word'}}>{scriptText||'⏳ جاري تحميل السكريبت...'}</pre>
             </div>
-
-            {tabKind==='fix'&&(
-              <div style={{...S.card,marginBottom:12,border:'1.5px solid rgba(255,152,0,0.35)',background:'rgba(255,152,0,0.05)'}}>
-                <div style={{fontSize:14,fontWeight:800,color:'#FF9800',marginBottom:8}}>🚑 سكريبت إصلاح الاتصال (relay-fix)</div>
-                <div style={{fontSize:12,color:'#6B8CAE',lineHeight:2,marginBottom:12}}>
-                  شغّل السكريبت ده لو: دخلت الكرت من الموبايل وظهر <strong style={{color:'#E2F0FB'}}>«تم التفعيل»</strong> وبعدها النت مافتحش
-                  أو ظهر صفحة <strong style={{color:'#E2F0FB'}}>Error: We did not get a valid answer from the central server</strong>.
-                  <br/>السبب: نسخة wifidog على الراوتر مش بتتكلم HTTPS — السكريبت بيركّب جسر محلي على الراوتر بيحل المشكلة نهائياً،
-                  وبيقيس الاتصال بنفسه ويقولك النتيجة في الآخر.
-                </div>
-                <div style={{background:'rgba(0,0,0,0.3)',borderRadius:10,padding:'10px 14px',marginBottom:12,fontSize:12,color:'#E2F0FB',lineHeight:2.2}}>
-                  <strong style={{color:'#FF9800'}}>طريقة التشغيل — 3 خطوات:</strong><br/>
-                  1️⃣ من كمبيوتر متصل بنفس شبكة الراوتر: <code style={{background:'#020608',padding:'2px 8px',borderRadius:6,color:'#7dd3fc',direction:'ltr',display:'inline-block'}}>ssh root@{d.routerIp||'192.168.1.1'}</code><br/>
-                  2️⃣ الصق الأمر ده واضغط Enter:<br/>
-                  <code style={{background:'#020608',padding:'4px 8px',borderRadius:6,color:'#7dd3fc',direction:'ltr',display:'block',marginTop:6,whiteSpace:'pre-wrap',wordBreak:'break-all'}}>wget -q -O /tmp/fix.sh "https://{typeof window!=='undefined'?window.location.host:''}/api/admin/config?deviceId={d.id}&type=relay-fix" && sh /tmp/fix.sh</code><br/>
-                  3️⃣ استنى رسالة <strong style={{color:'#00E676'}}>✅ تم الإصلاح بنجاح</strong> — وبعدها اعزل الواي فاي من الموبايل وارجع اتصل وادخل الكرت
-                </div>
-                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,flexWrap:'wrap',gap:8}}>
-                  <div style={{fontSize:12,color:'#6B8CAE'}}>محتوى السكريبت {fixText?`(${Math.round(fixText.length/1024)}KB)`:''}</div>
-                  <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-                    <button onClick={()=>copy(fixText,'fix-'+d.id)} style={{...S.btn(copied==='fix-'+d.id?'#00E676':'#0C1420',copied==='fix-'+d.id?'#000':'#FF9800'),border:'1px solid rgba(255,152,0,0.4)',fontSize:11,padding:'6px 12px'}}>{copied==='fix-'+d.id?'✅ تم النسخ':'📋 نسخ السكريبت'}</button>
-                    <button onClick={()=>download(fixText,`relay-fix-${d.gatewayId}.sh`)} style={{...S.btn('#0C1420','#6B8CAE'),border:'1px solid #1C2A40',fontSize:11,padding:'6px 12px'}}>⬇️ تحميل</button>
-                  </div>
-                </div>
-                <pre style={{background:'#020608',border:'1px solid #0C1420',borderRadius:10,padding:14,fontFamily:'JetBrains Mono,monospace',fontSize:11,color:'#7dd3fc',lineHeight:1.8,overflowX:'auto',maxHeight:380,direction:'ltr',textAlign:'left',margin:0,whiteSpace:'pre-wrap',wordBreak:'break-word'}}>{fixText||'⏳ جاري تحميل السكريبت...'}</pre>
-              </div>
-            )}
-
-            {tabKind==='install'&&(
-              <div style={{...S.card,marginBottom:12}}>
-                <div style={{fontSize:14,fontWeight:700,color:'#E2F0FB',marginBottom:8}}>⚡ سكريبت التسطيب الكامل</div>
-                <div style={{fontSize:12,color:'#6B8CAE',lineHeight:2,marginBottom:12}}>للأجهزة الجديدة بس — بيسطب wifidog + الجسر المحلي + مزامنة اسم الشبكة (2.4GHz و 5GHz) ويختبر كل حاجة تلقائياً</div>
-                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,flexWrap:'wrap',gap:8}}>
-                  <div style={{fontSize:12,color:'#6B8CAE'}}>محتوى السكريبت {scriptText?`(${Math.round(scriptText.length/1024)}KB)`:''}</div>
-                  <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-                    <button onClick={()=>copy(scriptText,'cmds-'+d.id)} style={{...S.btn(copied==='cmds-'+d.id?'#00E676':'linear-gradient(135deg,#0088CC,#00D4FF)',copied==='cmds-'+d.id?'#000':'#000'),padding:'8px 16px',fontSize:12}}>{copied==='cmds-'+d.id?'✅ تم النسخ':'📋 نسخ'}</button>
-                    <button onClick={()=>download(scriptText,`install-${d.gatewayId}.sh`)} style={{...S.btn('#0C1420','#6B8CAE'),border:'1px solid #1C2A40',fontSize:11,padding:'6px 12px'}}>⬇️ تحميل</button>
-                  </div>
-                </div>
-                <pre style={{background:'#020608',border:'1px solid #0C1420',borderRadius:10,padding:14,fontFamily:'JetBrains Mono,monospace',fontSize:11,color:'#7dd3fc',lineHeight:1.8,overflowX:'auto',maxHeight:380,direction:'ltr',textAlign:'left',margin:0,whiteSpace:'pre-wrap',wordBreak:'break-word'}}>{scriptText||'⏳ جاري تحميل السكريبت...'}</pre>
-              </div>
-            )}
           </div>
         )
       })()}

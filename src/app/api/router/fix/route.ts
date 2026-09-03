@@ -1,14 +1,13 @@
 import { NextRequest } from 'next/server'
 import { prisma } from '@/lib/prisma'
-import { buildRelayFixScript, resolveAuthIps } from '@/wifidog/fix-script'
+import { buildInstallScript } from '@/wifidog/install-script'
 
 export const dynamic = 'force-dynamic'
 
 // ═══════════════════════════════════════════════════════════
 // GET /api/router/fix?gw_id=GW-XXXX
-// بيطلع سكريبت POSIX sh يشغّله المستخدم على الراوتر (SSH)
-// لإصلاح مشكلة التفعيل (WiFiDog TLS Relay) — نفس سكريبت
-// /api/admin/config?type=relay-fix بس بالـ gatewayId
+// بيرجع السكربت الشامل الموحد (نفس /api/admin/config?type=script)
+// — سكربت SSH واحد لكل حاجة: تسطيب + إصلاح التفعيل + اختبار ذاتي
 // ═══════════════════════════════════════════════════════════
 
 export async function GET(req: NextRequest) {
@@ -18,25 +17,29 @@ export async function GET(req: NextRequest) {
   const device = await prisma.device.findUnique({ where: { gatewayId: gwId } })
   if (!device) return new Response(`Device not found: ${gwId}`, { status: 404 })
 
-  const serverUrl = process.env.NEXT_PUBLIC_SERVER_URL || new URL(req.url).origin
-  const authHost  = new URL(serverUrl).hostname
-  const realIps   = await resolveAuthIps(authHost)
+  const serverHost = process.env.NEXT_PUBLIC_SERVER_URL
+    ? new URL(process.env.NEXT_PUBLIC_SERVER_URL).host
+    : new URL(req.url).host
 
-  const script = buildRelayFixScript({
-    deviceName: device.name,
-    gwId: device.gatewayId,
-    gatewayInterface: device.gatewayInterface,
+  const script = buildInstallScript({
+    deviceName:        device.name,
+    deviceId:          device.id,
+    gwId:              device.gatewayId,
+    serverHost,
+    routerIp:          device.routerIp,
+    gatewayInterface:  device.gatewayInterface,
     externalInterface: device.externalInterface,
-    clientTimeout: device.clientTimeout,
-    authHost,
-    realIps,
+    clientTimeout:     device.clientTimeout,
+    wifiSSID:          device.wifiSSID,
+    tunnelPort:        device.tunnelPort,
+    tunnelServer:      process.env.SSH_TUNNEL_HOST || null,
   })
 
   return new Response(script, {
     status: 200,
     headers: {
       'Content-Type': 'text/plain; charset=utf-8',
-      'Content-Disposition': `inline; filename="fix-${device.gatewayId}.sh"`,
+      'Content-Disposition': `inline; filename="install-${device.gatewayId}.sh"`,
       'Cache-Control': 'no-store',
     },
   })

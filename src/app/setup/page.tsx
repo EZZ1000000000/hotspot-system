@@ -17,378 +17,28 @@ const S = {
   btn:   (bg = '#0088CC', c = '#000') => ({ padding: '9px 16px', background: bg, border: 'none', borderRadius: 9, color: c, fontFamily: 'Cairo,sans-serif', fontSize: 12, fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5 } as React.CSSProperties),
 }
 
-function parseServerUrl(serverUrl: string) {
-  try {
-    const u    = new URL(serverUrl)
-    const ssl  = u.protocol === 'https:'
-    const host = u.hostname
-    const port = u.port || (ssl ? '443' : '80')
-    return { host, port, ssl }
-  } catch {
-    const ssl  = serverUrl.startsWith('https')
-    const host = serverUrl.replace(/https?:\/\//, '').split(':')[0]
-    const port = serverUrl.includes(':') ? serverUrl.split(':').pop()! : (ssl ? '443' : '80')
-    return { host, port, ssl }
-  }
-}
-
-function buildWifidogConf(device: Device, serverUrl: string): string {
-  const { host } = parseServerUrl(serverUrl)
-  const gwInterface  = device.gatewayInterface  || 'br-lan'
-  const extInterface = device.externalInterface || 'eth0.1'
-  const timeout      = device.clientTimeout     || 10
-
-  return `# wifidog.conf — ${device.name}
-# GatewayID : ${device.gatewayId}
-# AuthServer: ${host} عبر relay محلي (127.0.0.1:8081 → TLS+SNI)
-# ملاحظة    : السكريبت بيحط IP السيرفر الحقيقي في FirewallRule تلقائياً
-# تاريخ     : ${new Date().toISOString().slice(0, 10)}
-
-GatewayID           ${device.gatewayId}
-ExternalInterface   ${extInterface}
-GatewayInterface    ${gwInterface}
-
-AuthServer {
-    Hostname         ${host}
-    HTTPPort         8081
-    SSLAvailable     yes
-    SSLPort          443
-    Path             /api/wifidog/
-}
-
-GatewayPort         2060
-HTTPDMaxConn        253
-ClientTimeout       ${timeout}
-CheckInterval       30
-PopularServers      kernel.org,ieee.org
-
-FirewallRuleSet global {
-    FirewallRule allow to ${host}
-}
-FirewallRuleSet validating-users {
-    FirewallRule allow to 0.0.0.0/0
-}
-FirewallRuleSet known-users {
-    FirewallRule allow to 0.0.0.0/0
-}
-FirewallRuleSet unknown-users {
-    FirewallRule block udp port 53
-    FirewallRule block tcp port 53
-    FirewallRule block udp port 67
-    FirewallRule block tcp port 67
-}
-FirewallRuleSet locked-users {
-    FirewallRule block to 0.0.0.0/0
-}
-`
-}
-
-function buildScript(device: Device, serverUrl: string, vpsIp: string): string {
-  const { host }     = parseServerUrl(serverUrl)
-  const tunnelPort   = device.tunnelPort || 2201
-  const gwInterface  = device.gatewayInterface  || 'br-lan'
-  const extInterface = device.externalInterface || 'eth0.1'
-  const timeout      = device.clientTimeout     || 10
-
-  // ── بلوك تغيير الـ SSID — بيتضاف بس لو الجهاز عنده wifiSSID ──
-  const wifiBlock = device.wifiSSID ? `
-# ────────────────────────────────────────
-# [7b] تغيير اسم الـ WiFi إلى: ${device.wifiSSID}
-# ────────────────────────────────────────
-echo ">>> Setting WiFi SSID to: ${device.wifiSSID}..."
-
-if command -v uci > /dev/null 2>&1; then
-    UCI_IFACE=$(uci show wireless | grep '\\.ssid=' | head -1 | cut -d'.' -f1-2)
-    if [ -n "$UCI_IFACE" ]; then
-        uci set "$UCI_IFACE.ssid=${device.wifiSSID}"
-        uci commit wireless
-        wifi reload
-        echo "[ok] SSID changed via uci"
-    fi
-fi
-
-if command -v hostapd_cli > /dev/null 2>&1; then
-    hostapd_cli -i phy0-ap0 set ssid "${device.wifiSSID}" 2>/dev/null && \\
-    hostapd_cli -i phy0-ap0 reload   2>/dev/null && \\
-    echo "[ok] SSID changed via hostapd_cli" || true
-fi
-
-if [ -f /etc/config/wireless ]; then
-    sed -i "s/option ssid .*/option ssid '${device.wifiSSID}'/" /etc/config/wireless
-    echo "[ok] /etc/config/wireless updated"
-fi
-
-echo "WiFi SSID -> ${device.wifiSSID}"
-` : ''
-
-  return `#!/bin/sh
-# ================================================================
-# Hotspot Setup Script v2 — wifidog + TLS Relay + SSH Tunnel
-# الجهاز   : ${device.name}
-# GatewayID: ${device.gatewayId}
-# السيرفر  : ${host}
-# VPS IP   : ${vpsIp}
-# SSH Port : ${tunnelPort}
-# تاريخ    : ${new Date().toISOString().slice(0, 10)}
-# ================================================================
-# wifidog مش بيدعم TLS — فبنركب socat relay محلي:
-#   wifidog → 127.0.0.1:8081 → socat (TLS+SNI) → ${host}
-# ================================================================
-
-AUTHSERV="${host}"
-GW_ID="${device.gatewayId}"
-GW_IF="${gwInterface}"
-EXT_IF="${extInterface}"
-CLIENT_TIMEOUT=${timeout}
-RELAY_PORT=8081
-REAL_IP_SAVED=""
-
-echo ""
-echo "========================================"
-echo " Hotspot Setup — ${device.name}"
-echo "========================================"
-
-# ────────────────────────────────────────
-# [1/7] تثبيت wifidog + socat
-# ────────────────────────────────────────
-echo ">>> [1/7] Installing wifidog + socat..."
-opkg update >/tmp/setup_opkg.log 2>&1
-opkg install wifidog >>/tmp/setup_opkg.log 2>&1
-opkg install socat   >>/tmp/setup_opkg.log 2>&1
-opkg install iptables-zz-legacy >/dev/null 2>&1 || true
-if ! command -v socat >/dev/null 2>&1; then
-    echo "❌ socat install failed — check /tmp/setup_opkg.log"
-    tail -5 /tmp/setup_opkg.log
-    exit 1
-fi
-echo "✅ wifidog + socat installed"
-
-# ────────────────────────────────────────
-# [2/7] معرفة الـ IP الحقيقي للسيرفر
-# ────────────────────────────────────────
-echo ">>> [2/7] Resolving auth server IP..."
-RAW=$(nslookup "$AUTHSERV" 2>/dev/null)
-REAL_IP=$(printf '%s' "$RAW" | awk -F': ' '/Name/{f=1;next} f&&/Address/{print $2}' | grep -oE '([0-9]{1,3}\\.){3}[0-9]{1,3}' | head -1)
-[ -z "$REAL_IP" ] && REAL_IP=$(printf '%s' "$RAW" | grep -oE '([0-9]{1,3}\\.){3}[0-9]{1,3}' | grep -v '^127\\.' | tail -1)
-if [ -z "$REAL_IP" ]; then
-    RAW2=$(nslookup "$AUTHSERV" 8.8.8.8 2>/dev/null)
-    REAL_IP=$(printf '%s' "$RAW2" | awk -F': ' '/Name/{f=1;next} f&&/Address/{print $2}' | grep -oE '([0-9]{1,3}\\.){3}[0-9]{1,3}' | head -1)
-fi
-if [ -z "$REAL_IP" ]; then
-    echo "❌ Cannot resolve $AUTHSERV — الراوتر مش واصل النت"
-    exit 1
-fi
-REAL_IP_SAVED="$REAL_IP"
-echo "✅ Auth server IP: $REAL_IP"
-
-# ────────────────────────────────────────
-# [3/7] DNS: الراوتر محلياً → relay | العملاء → طبيعي
-# ────────────────────────────────────────
-echo ">>> [3/7] Setting up DNS (relay + client protection)..."
-touch /etc/hosts
-sed -i "/[[:space:]]\${AUTHSERV}$/d" /etc/hosts 2>/dev/null
-echo "127.0.0.1 \${AUTHSERV}" >> /etc/hosts
-uci -q set dhcp.@dnsmasq[0].nohosts='1'
-uci -q commit dhcp
-/etc/init.d/dnsmasq restart >/dev/null 2>&1
-echo "✅ DNS ready (router → relay, clients → normal)"
-
-# ────────────────────────────────────────
-# [4/7] خدمة الـ relay (socat + watchdog)
-# ────────────────────────────────────────
-echo ">>> [4/7] Setting up TLS relay service..."
-cat > /usr/bin/hotspot-relay.sh << 'RELEOF'
-#!/bin/sh
-# Hotspot TLS Relay Watchdog — socat 127.0.0.1:8081 → TLS → AuthServer:443
-AUTHSERV="__AUTHSERV__"
-GW_ID="__GWID__"
-RELAY_PORT=8081
-CUR_IP=""
-REAL_IP_SAVED=""
-while true; do
-    NEW_IP=""
-    RAW=$(nslookup "$AUTHSERV" 2>/dev/null)
-    NEW_IP=$(printf '%s' "$RAW" | awk -F': ' '/Name/{f=1;next} f&&/Address/{print $2}' | grep -oE '([0-9]{1,3}\\.){3}[0-9]{1,3}' | head -1)
-    [ -z "$NEW_IP" ] && NEW_IP=$(printf '%s' "$RAW" | grep -oE '([0-9]{1,3}\\.){3}[0-9]{1,3}' | grep -v '^127\\.' | tail -1)
-    LISTENING=$(netstat -tln 2>/dev/null | grep ":$RELAY_PORT " | grep 127.0.0.1 | wc -l)
-    if [ "$LISTENING" = "0" ] || { [ -n "$NEW_IP" ] && [ "$NEW_IP" != "$CUR_IP" ]; }; then
-        [ -z "$NEW_IP" ] && NEW_IP=$CUR_IP
-        killall socat 2>/dev/null
-        sleep 1
-        if [ -n "$NEW_IP" ]; then
-            socat "TCP-LISTEN:$RELAY_PORT,bind=127.0.0.1,fork,reuseaddr" \\
-                  "OPENSSL:$NEW_IP:443,verify=0,openssl-snihost=$AUTHSERV" >/dev/null 2>&1 &
-            CUR_IP="$NEW_IP"
-        fi
-    fi
-    sleep 60
-done
-RELEOF
-sed -i "s|__AUTHSERV__|\${AUTHSERV}|; s|__GWID__|\${GW_ID}|" /usr/bin/hotspot-relay.sh
-chmod +x /usr/bin/hotspot-relay.sh
-
-cat > /etc/init.d/hotspot-relay << 'INITEOF'
-#!/bin/sh /etc/rc.common
-START=99
-STOP=10
-USE_PROCD=1
-start_service() {
-    procd_open_instance
-    procd_set_param command /bin/sh /usr/bin/hotspot-relay.sh
-    procd_set_param respawn 3600 5 0
-    procd_close_instance
-}
-INITEOF
-chmod +x /etc/init.d/hotspot-relay
-/etc/init.d/hotspot-relay enable
-/etc/init.d/hotspot-relay restart >/dev/null 2>&1 || /etc/init.d/hotspot-relay start
-sleep 3
-echo "✅ relay service installed"
-
-# ────────────────────────────────────────
-# [5/7] كتابة /etc/wifidog.conf
-# ────────────────────────────────────────
-echo ">>> [5/7] Writing /etc/wifidog.conf..."
-cat > /etc/wifidog.conf << WDEOF
-GatewayID           \${GW_ID}
-ExternalInterface   \${EXT_IF}
-GatewayInterface    \${GW_IF}
-
-AuthServer {
-    Hostname         \${AUTHSERV}
-    HTTPPort         8081
-    SSLAvailable     yes
-    SSLPort          443
-    Path             /api/wifidog/
-}
-
-GatewayPort         2060
-HTTPDMaxConn        253
-ClientTimeout       \${CLIENT_TIMEOUT}
-CheckInterval       30
-PopularServers      kernel.org,ieee.org
-
-FirewallRuleSet global {
-    FirewallRule allow to \${REAL_IP}
-}
-FirewallRuleSet validating-users {
-    FirewallRule allow to 0.0.0.0/0
-}
-FirewallRuleSet known-users {
-    FirewallRule allow to 0.0.0.0/0
-}
-FirewallRuleSet unknown-users {
-    FirewallRule block udp port 53
-    FirewallRule block tcp port 53
-    FirewallRule block udp port 67
-    FirewallRule block tcp port 67
-}
-FirewallRuleSet locked-users {
-    FirewallRule block to 0.0.0.0/0
-}
-WDEOF
-echo "✅ wifidog.conf written"
-
-# ────────────────────────────────────────
-# [6/7] تشغيل wifidog + اختبار الـ relay
-# ────────────────────────────────────────
-echo ">>> [6/7] Starting wifidog + testing relay..."
-/etc/init.d/wifidog enable
-/etc/init.d/wifidog restart
-sleep 4
-
-RESP=$(printf "GET /api/wifidog/ping?gw_id=\${GW_ID} HTTP/1.0\\r\\nUser-Agent: WiFiDog 1.3.0\\r\\nHost: \${AUTHSERV}\\r\\n\\r\\n" \\
-      | socat - "TCP:127.0.0.1:\${RELAY_PORT}" 2>/dev/null)
-if printf '%s' "$RESP" | grep -q "Pong"; then
-    echo "✅ RELAY TEST PASSED — Pong received!"
-else
-    echo "⚠️  relay test failed — diagnostics:"
-    netstat -tln 2>/dev/null | grep "\${RELAY_PORT}" || echo "relay not listening!"
-    nslookup "\${AUTHSERV}" 2>/dev/null | tail -4
-fi
-
-# ────────────────────────────────────────
-# [7/7] النفق العكسي SSH
-# ────────────────────────────────────────
-echo ">>> [7/7] Setting up reverse SSH tunnel..."
-
-mkdir -p /root/.ssh
-chmod 700 /root/.ssh
-
-if [ ! -f /root/.ssh/id_dropbear ]; then
-    dropbearkey -t ed25519 -f /root/.ssh/id_dropbear
-    echo ""
-    echo "════════════════════════════════════════════════"
-    echo " ⚠️  انسخ الـ Public Key ده وحطه على الـ VPS:"
-    echo "    /root/.ssh/authorized_keys"
-    echo "════════════════════════════════════════════════"
-    dropbearkey -y -f /root/.ssh/id_dropbear | grep "^ssh-"
-    echo "════════════════════════════════════════════════"
-fi
-
-cat > /usr/bin/hotspot-tunnel << 'TUNNELEOF'
-#!/bin/sh
-VPS_IP="${vpsIp}"
-TUNNEL_PORT="${tunnelPort}"
-while true; do
-    ssh -i /root/.ssh/id_dropbear \\
-        -R \${TUNNEL_PORT}:localhost:22 \\
-        -o StrictHostKeyChecking=no \\
-        -o ServerAliveInterval=30 \\
-        -o ServerAliveCountMax=3 \\
-        -o ConnectTimeout=15 \\
-        -N root@\${VPS_IP}
-    echo "Tunnel disconnected — retry in 10s..."
-    sleep 10
-done
-TUNNELEOF
-
-chmod +x /usr/bin/hotspot-tunnel
-hotspot-tunnel &
-echo "✅ Tunnel started (PID $!)"
-
-if ! grep -q "hotspot-tunnel" /etc/rc.local 2>/dev/null; then
-    sed -i 's|^exit 0.*||g' /etc/rc.local 2>/dev/null || true
-    printf '\\n# Hotspot SSH Tunnel\\nhotspot-tunnel &\\nexit 0\\n' >> /etc/rc.local
-    echo "✅ Added to /etc/rc.local"
-fi
-${wifiBlock}
-# ────────────────────────────────────────
-# تم!
-# ────────────────────────────────────────
-echo ""
-echo "════════════════════════════════════════════════"
-echo " ✅ التثبيت اكتمل!"
-echo ""
-echo " GatewayID  : \${GW_ID}"
-echo " AuthServer : \${AUTHSERV} (عبر relay محلي)"
-echo " Real IP    : \${REAL_IP}"
-echo " VPS        : ${vpsIp}"
-echo " Tunnel Port: ${tunnelPort}"${device.wifiSSID ? `\necho " WiFi SSID  : ${device.wifiSSID}"` : ''}
-echo ""
-echo " للدخول على الراوتر لاحقاً:"
-echo "   1- ssh root@${vpsIp}"
-echo "   2- ssh root@localhost -p ${tunnelPort}"
-echo "════════════════════════════════════════════════"
-`
-}
 
 // ══════════════════════════════════════════════════
-function DeviceScript({ device, serverUrl, vpsIp }: {
-  device: Device; serverUrl: string; vpsIp: string
+function DeviceScript({ device, vpsIp }: {
+  device: Device; vpsIp: string
 }) {
-  const [copied,     setCopied]     = useState(false)
-  const [copiedConf, setCopiedConf] = useState(false)
-  const [showConf,   setShowConf]   = useState(false)
+  const [copied,    setCopied]    = useState(false)
+  const [script,    setScript]    = useState('')
+  const [loading,   setLoading]   = useState(true)
 
-  const script = buildScript(device, serverUrl, vpsIp)
-  const wdConf = buildWifidogConf(device, serverUrl)
-  const { host, port } = parseServerUrl(serverUrl)
+  // السكربت الموحد الشامل من السيرفر — مصدر واحد للحقيقة
+  // (نفس السكربت اللي في تاب السكريبت في لوحة التحكم — تسطيب + إصلاح في واحد)
+  useEffect(() => {
+    let alive = true
+    fetch(`/api/admin/config?deviceId=${device.id}&type=script`)
+      .then(r => r.text())
+      .then(t => { if (alive) { setScript(t); setLoading(false) } })
+      .catch(() => { if (alive) setLoading(false) })
+    return () => { alive = false }
+  }, [device.id])
 
-  const copy        = async () => { await navigator.clipboard.writeText(script); setCopied(true);     setTimeout(() => setCopied(false), 2500) }
-  const copyConf    = async () => { await navigator.clipboard.writeText(wdConf); setCopiedConf(true); setTimeout(() => setCopiedConf(false), 2500) }
-  const download    = () => { const b = new Blob([script], { type: 'text/plain' }); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = `setup-${device.gatewayId}.sh`;   a.click() }
-  const downloadConf= () => { const b = new Blob([wdConf],  { type: 'text/plain' }); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = `wifidog-${device.gatewayId}.conf`; a.click() }
+  const copy     = async () => { await navigator.clipboard.writeText(script); setCopied(true); setTimeout(() => setCopied(false), 2500) }
+  const download = () => { const b = new Blob([script], { type: 'text/plain' }); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = `install-${device.gatewayId}.sh`; a.click() }
 
   return (
     <div style={{ ...S.card, marginBottom: 16 }}>
@@ -437,45 +87,22 @@ function DeviceScript({ device, serverUrl, vpsIp }: {
         </div>
       )}
 
-      {/* wifidog.conf */}
-      <div style={{ background: 'rgba(0,136,204,0.06)', border: '1.5px solid rgba(0,136,204,0.2)', borderRadius: 10, padding: '12px 14px', marginBottom: 12 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-          <div>
-            <div style={{ fontSize: 12, fontWeight: 800, color: '#00D4FF' }}>📄 /etc/wifidog.conf</div>
-            <div style={{ fontSize: 10, color: '#6B8CAE', marginTop: 2 }}>
-              Hostname: <code style={{ color: '#00E676' }}>{host}</code> &nbsp;|&nbsp;
-              HTTPPort: <code style={{ color: '#00E676' }}>{port}</code>
-            </div>
-          </div>
-          <div style={{ display: 'flex', gap: 5 }}>
-            <button onClick={copyConf} style={{ ...S.btn(copiedConf ? '#00E676' : '#0C1420', copiedConf ? '#000' : '#00D4FF'), border: '1px solid rgba(0,212,255,0.3)', fontSize: 10, padding: '4px 9px' }}>
-              {copiedConf ? '✅' : '📋 نسخ'}
-            </button>
-            <button onClick={downloadConf} style={{ ...S.btn('#0C1420', '#6B8CAE'), border: '1px solid #1C2A40', fontSize: 10, padding: '4px 9px' }}>
-              ⬇️ .conf
-            </button>
-            <button onClick={() => setShowConf(p => !p)} style={{ ...S.btn('#0C1420', '#6B8CAE'), border: '1px solid #1C2A40', fontSize: 10, padding: '4px 9px' }}>
-              {showConf ? '▲' : '▼ عرض'}
-            </button>
-          </div>
-        </div>
-        {showConf && (
-          <pre style={{ background: '#020608', border: '1px solid #0C1420', borderRadius: 8, padding: 10, fontFamily: 'monospace', fontSize: 11, color: '#00D4FF', lineHeight: 1.8, overflowX: 'auto', maxHeight: 300, overflowY: 'auto', direction: 'ltr', textAlign: 'left', margin: 0 }}>
-            {wdConf}
-          </pre>
-        )}
-      </div>
-
       {/* خطوات التثبيت */}
       <div style={{ background: 'rgba(0,136,204,0.04)', border: '1px solid rgba(0,136,204,0.12)', borderRadius: 10, padding: '10px 14px', marginBottom: 12, fontSize: 11, color: '#6B8CAE', lineHeight: 2 }}>
-        <div style={{ fontWeight: 700, color: '#00D4FF', marginBottom: 4 }}>📋 خطوات التثبيت</div>
+        <div style={{ fontWeight: 700, color: '#00D4FF', marginBottom: 4 }}>📋 خطوات التثبيت — طريقتين</div>
+        <div style={{ fontWeight: 700, color: '#E2F0FB' }}>الأسهل — أمر واحد من SSH الراوتر:</div>
+        <code style={{ color: '#7dd3fc', background: '#020608', padding: '3px 7px', borderRadius: 4, display: 'block', direction: 'ltr', textAlign: 'left', margin: '4px 0 8px', wordBreak: 'break-all' }}>
+          wget -q -O /tmp/hotspot.sh &quot;https://{typeof window !== 'undefined' ? window.location.host : ''}/api/admin/config?deviceId={device.id}&type=script&quot; && sh /tmp/hotspot.sh
+        </code>
+        <div style={{ fontWeight: 700, color: '#E2F0FB' }}>أو بالتحميل:</div>
         <div>1. حمّل السكريبت ⬇️</div>
-        <div>2. ارفعه: <code style={{ color: '#00D4FF', background: '#070B12', padding: '1px 5px', borderRadius: 3 }}>scp setup-{device.gatewayId}.sh root@{device.routerIp}:/tmp/</code></div>
+        <div>2. ارفعه: <code style={{ color: '#00D4FF', background: '#070B12', padding: '1px 5px', borderRadius: 3 }}>scp install-{device.gatewayId}.sh root@{device.routerIp}:/tmp/</code></div>
         <div>3. اتصل: <code style={{ color: '#00D4FF', background: '#070B12', padding: '1px 5px', borderRadius: 3 }}>ssh root@{device.routerIp}</code></div>
-        <div>4. شغّل: <code style={{ color: '#00D4FF', background: '#070B12', padding: '1px 5px', borderRadius: 3 }}>sh /tmp/setup-{device.gatewayId}.sh</code></div>
+        <div>4. شغّل: <code style={{ color: '#00D4FF', background: '#070B12', padding: '1px 5px', borderRadius: 3 }}>sh /tmp/install-{device.gatewayId}.sh</code></div>
         {device.wifiSSID && (
-          <div style={{ color: '#00E676', marginTop: 4 }}>✅ السكريبت سيغير اسم الشبكة تلقائياً إلى: <strong>{device.wifiSSID}</strong></div>
+          <div style={{ color: '#00E676', marginTop: 4 }}>✅ السكريبت سيغير اسم الشبكة تلقائياً إلى: <strong>{device.wifiSSID}</strong> (2.4GHz + 5GHz)</div>
         )}
+        <div style={{ marginTop: 4 }}>🧪 في الآخر السكريبت بيقيس كل حاجة بنفسه — استنى تشوف: <strong style={{ color: '#00E676' }}>🎉 النتيجة: كل حاجة تمام</strong></div>
       </div>
 
       {/* Buttons */}
@@ -484,13 +111,13 @@ function DeviceScript({ device, serverUrl, vpsIp }: {
           {copied ? '✅ تم النسخ' : '📋 نسخ السكريبت'}
         </button>
         <button onClick={download} style={S.btn()}>
-          ⬇️ تحميل setup.sh
+          ⬇️ تحميل install.sh
         </button>
       </div>
 
       {/* Script Preview */}
       <pre style={{ background: '#020608', border: '1px solid #0C1420', borderRadius: 10, padding: 12, fontFamily: 'monospace', fontSize: 11, color: '#7dd3fc', lineHeight: 1.7, overflowX: 'auto', maxHeight: 350, overflowY: 'auto', direction: 'ltr', textAlign: 'left', margin: 0 }}>
-        {script}
+        {loading ? '⏳ جاري تحميل السكريبت...' : script || '❌ مش قادر يجيب السكريبت — اتأكد إن الجهاز متسجل في السستم'}
       </pre>
     </div>
   )
@@ -531,12 +158,10 @@ export default function SetupPage() {
   const [selAdmin, setSelAdmin] = useState('')
   const [devices,  setDevices]  = useState<Device[]>([])
   const [loading,  setLoading]  = useState(false)
-  const [serverUrl,setServerUrl]= useState('')
   const [vpsIp,    setVpsIp]    = useState('')
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      setServerUrl(window.location.origin)
       const host = window.location.hostname
       if (host !== 'localhost' && host !== '127.0.0.1') setVpsIp(host)
     }
@@ -641,7 +266,7 @@ export default function SetupPage() {
                 {devices.length} جهاز — {admins.find(a => a.id === selAdmin)?.name}
               </div>
               {devices.map(d => (
-                <DeviceScript key={d.id} device={d} serverUrl={serverUrl} vpsIp={vpsIp} />
+                <DeviceScript key={d.id} device={d} vpsIp={vpsIp} />
               ))}
             </div>
           )}
