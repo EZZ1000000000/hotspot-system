@@ -1,5 +1,11 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // ── إصلاح حاسم لمشكلة wifidog ──
+  // wifidog 1.3.0 بيبعت كل الطلبات بـ trailing slash (/api/wifidog/auth/?stage=...)
+  // Next.js بيعمل 308 redirect قبل ما الـ middleware يشوف الطلب،
+  // و wifidog مش بيتابع الـ redirects → "We did not get a valid answer"
+  // skipTrailingSlashRedirect بيلغي الـ 308 التلقائي ويسيب الـ middleware يعمل rewrite
+  skipTrailingSlashRedirect: true,
   // ssh2/node-ssh فيها binary files — لازم تكون external في السيرفر
   experimental: {
     serverComponentsExternalPackages: ['ssh2', 'node-ssh', 'bcryptjs'],

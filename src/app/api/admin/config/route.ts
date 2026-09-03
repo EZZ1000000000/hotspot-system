@@ -3,23 +3,40 @@ import { prisma } from '@/lib/prisma'
 
 export const dynamic = 'force-dynamic'
 
-// ── wifidog.conf ──────────────────────────────────────────────
+// ── هل السيرفر HTTPS-only (زي Vercel)؟ أي hostname بدل IP ──
+function isHttpsServer(ip: string): boolean {
+  return !/^\d/.test(ip)
+}
+
+// ── جسر HTTPS على الراوتر نفسه (uhttpd CGI + busybox wget) ──
+// ليه محتاجين الجسر أصلاً؟
+// 1) نسخة wifidog العادية في OpenWrt مفيهاش TLS خالص
+// 2) نسخة wifidog-tls بتتكلم TLS 1.0 بس، و Vercel بيرفض TLS 1.0 (بيقبل 1.2+)
+// 3) Vercel نفسه HTTPS-only — مفيش HTTP على بورت 80 (بيرد 308)
+// الحل: wifidog يتكلم HTTP مع uhttpd على الراوتر نفسه (بورت 80)،
+// والـ CGI بيمرر الطلب للسيرفر عبر wget HTTPS (TLS 1.2 عن طريق libustream)
+// ── wifidog.conf ──────────────────────────────
 function buildConf(d: {
   gatewayId: string; gatewayInterface: string; externalInterface: string
   clientTimeout: number; httpMaxConn: number
   routerIp?: string
 }, ip: string, port: number): string {
+  const relay    = isHttpsServer(ip)
+  const routerIp = d.routerIp || '192.168.1.1'
+  const authHost = relay ? routerIp : ip
+  const authPort = relay ? '__UHTTPD_PORT__' : String(port)
+  const authPath = relay ? '/cgi-bin/go?ep=/' : '/api/wifidog/'
   return [
     `GatewayID           ${d.gatewayId}`,
-    `GatewayAddress      ${d.routerIp || '192.168.1.1'}`,
+    `GatewayAddress      ${routerIp}`,
     `ExternalInterface   ${d.externalInterface}`,
     `GatewayInterface    ${d.gatewayInterface}`,
     ``,
     `AuthServer {`,
-    `    Hostname        ${ip}`,
-    `    HTTPPort        ${port}`,
-    `    SSLAvailable    ${!ip.match(/^\d/) ? 'yes' : 'no'}`,
-    `    Path            /api/wifidog/`,
+    `    Hostname        ${authHost}`,
+    `    HTTPPort        ${authPort}`,
+    `    SSLAvailable    no`,
+    `    Path            ${authPath}`,
     `}`,
     ``,
     `GatewayPort         2060`,
@@ -31,6 +48,7 @@ function buildConf(d: {
     ``,
     `FirewallRuleSet global {`,
     `    FirewallRule allow to ${ip}`,
+    ...(relay ? [`    FirewallRule allow to ${routerIp}`] : []),
     `}`,
     `FirewallRuleSet validating-users {`,
     `    FirewallRule allow to 0.0.0.0/0`,
@@ -202,12 +220,34 @@ echo ""
 echo ">>> تثبيت wifidog..."
 opkg update  2>/dev/null || true
 opkg install wifidog 2>/dev/null || true
-# دعم HTTPS للـ wget (لازم لمزامنة الـ SSID مع السيرفر)
+# دعم HTTPS للـ wget (لازم للجسر ولمزامنة الـ SSID مع السيرفر)
 opkg install libustream-mbedtls ca-bundle ca-certificates 2>/dev/null || opkg install libustream-openssl ca-bundle ca-certificates 2>/dev/null || true
+
+echo ">>> تركيب جسر HTTPS على الراوتر (لأن السيرفر HTTPS-only)..."
+# wifidog مش بيعرف يتكلم TLS 1.2 — الجسر بيستقبل طلباته محلياً ويمررها للسيرفر بـ wget
+mkdir -p /www/cgi-bin
+cat > /www/cgi-bin/go << 'RELAY_EOF'
+${relayShellScript(IP)}
+RELAY_EOF
+chmod +x /www/cgi-bin/go
+opkg install uhttpd >/dev/null 2>&1 || true
+if uci -q get uhttpd.main >/dev/null 2>&1; then
+  if ! uci -q get uhttpd.main.cgi_prefix >/dev/null 2>&1; then
+    uci set uhttpd.main.cgi_prefix='/cgi-bin'
+    uci commit uhttpd
+    /etc/init.d/uhttpd restart 2>/dev/null || true
+  fi
+fi
+/etc/init.d/uhttpd enable 2>/dev/null || true
+/etc/init.d/uhttpd start 2>/dev/null || true
 
 echo ">>> كتابة /etc/wifidog.conf..."
 rm -f /etc/wifidog.conf
 ${confLines}
+# نستبدل بورت uhttpd الفعلي في الكونفج (افتراضي 80)
+UPORT=$(uci -q get uhttpd.main.listen_http 2>/dev/null | tr ' ' '\\n' | grep -v '^\\[' | head -n1 | sed 's/.*://')
+[ -z "$UPORT" ] && UPORT=80
+sed -i "s/__UHTTPD_PORT__/$UPORT/" /etc/wifidog.conf
 
 echo ">>> تغيير اسم الشبكتين (2.4GHz + 5GHz) إلى: ${shellQuote(WANT_SSID)}"
 # تطبيق اسم الشبكة المحدد في النظام على كل واجهات الواي فاي
@@ -316,6 +356,16 @@ echo ">>> تفعيل wifidog عند التشغيل..."
 /etc/init.d/wifidog start 2>/dev/null || true
 
 echo ""
+echo ">>> اختبار جسر HTTPS (لازم يرجع Pong)..."
+TEST_RESP=$(wget -q -T 25 -O - "http://127.0.0.1:\${UPORT}/cgi-bin/go?ep=/ping/?gw_id=SELFTEST" 2>/dev/null || true)
+if [ "\${TEST_RESP}" = "Pong" ]; then
+  echo "✅ الجسر شغال — الراوتر يوصل للسيرفر بنجاح والتفعيل هيشتغل"
+else
+  echo "⚠️ الجسر ما رجعش Pong — شغّل الأمر ده وابعت النتيجة:"
+  echo "   wget -O - 'http://127.0.0.1:\${UPORT}/cgi-bin/go?ep=/ping/'"
+fi
+
+echo ""
 echo "╔══════════════════════════════════════════════════════════╗"
 echo "║              ✅ تم التثبيت بنجاح!                       ║"
 echo "╠══════════════════════════════════════════════════════════╣"
@@ -345,6 +395,113 @@ echo ""
 function shellQuote(s: string): string {
   if (s === '') return "''"
   return "'" + s.replace(/'/g, "'\\''") + "'"
+}
+
+// ── سكريبت الجسر: CGI بيمرر طلبات wifidog للسيرفر عبر HTTPS ──
+// بيتركب على /www/cgi-bin/go و wifidog بيستناده من خلال
+// Path = /cgi-bin/go?ep=/  →  الطلب بيطلع:
+//   /cgi-bin/go?ep=/auth/?stage=login&token=...
+// الآندبوينت بيتبني من قيمة ep والباقي بيتبعت زي ما هو للسيرفر
+function relayShellScript(serverHost: string): string {
+  return `#!/bin/sh
+# جسر HTTPS بين wifidog والسيرفر — بيشغّل على uhttpd CGI
+SRV="${serverHost}"
+QS="$QUERY_STRING"
+[ -z "$QS" ] && QS="ep=/ping/?"
+ALL="\${QS#ep=}"
+case "$ALL" in
+  *\\?*) EP="\${ALL%%\\?*}"; REST="\${ALL#*\\?}" ;;
+  *)    EP="$ALL"; REST="" ;;
+esac
+EP="\${EP#/}"
+case "$EP" in
+  ping/*|auth/*)
+    # طلبات داخلية من wifidog نفسه — نمرر الرد الخام
+    RESP=$(wget -q -T 15 -O - --no-check-certificate "https://\${SRV}/api/wifidog/\${EP}?\${REST}" 2>/dev/null)
+    RC=$?
+    echo "Content-Type: text/plain"
+    echo ""
+    if [ $RC -eq 0 ] && [ -n "$RESP" ]; then
+      echo "$RESP"
+    elif echo "$EP" | grep -q "^auth"; then
+      echo "Auth: 0"
+    else
+      echo "ERR"
+    fi
+    ;;
+  *)
+    # طلبات من متصفح الموبايل — نحوله مباشرة للسيرفر (الفايرول مسموح للسيرفر)
+    echo "Content-Type: text/html"
+    echo ""
+    echo "<!DOCTYPE html><html><head><meta charset='utf-8'><meta http-equiv='refresh' content='0;url=https://\${SRV}/api/wifidog/\${EP}?\${REST}'></head><body style='font-family:sans-serif;text-align:center;padding:40px;background:#070B12;color:#00D4FF'>جاري فتح صفحة الدخول...</body></html>"
+    ;;
+esac
+`
+}
+
+// ── سكريبت إصلاح سريع للراوترات المثبّتة بالفعل ──
+// بيركّب الجسر + بيعدّل wifidog.conf من غير إعادة تثبيت كاملة
+function buildRelayFix(d: { gatewayId: string; routerIp?: string }, ip: string): string {
+  const routerIp = d.routerIp || '192.168.1.1'
+  return `#!/bin/sh
+# ================================================================
+#  relay-fix.sh — إصلاح اتصال wifidog بالسيرفر عبر جسر HTTPS
+#  GatewayID : ${d.gatewayId}
+#  السيرفر   : ${ip}
+#
+#  التشغيل:
+#    scp relay-fix.sh root@${routerIp}:/tmp/
+#    ssh root@${routerIp} "sh /tmp/relay-fix.sh"
+# ================================================================
+set -e
+SRV="${ip}"
+GWIP="${routerIp}"
+
+echo ">>> تثبيت دعم HTTPS لـ wget..."
+opkg update >/dev/null 2>&1 || true
+opkg install uhttpd >/dev/null 2>&1 || true
+opkg install libustream-mbedtls ca-bundle ca-certificates >/dev/null 2>&1 || \\\n  opkg install libustream-openssl ca-bundle ca-certificates >/dev/null 2>&1 || true
+
+echo ">>> كتابة الجسر /www/cgi-bin/go..."
+mkdir -p /www/cgi-bin
+cat > /www/cgi-bin/go << 'RELAY_EOF'
+${relayShellScript(ip)}
+RELAY_EOF
+chmod +x /www/cgi-bin/go
+
+echo ">>> ضبط uhttpd..."
+if uci -q get uhttpd.main >/dev/null 2>&1; then
+  if ! uci -q get uhttpd.main.cgi_prefix >/dev/null 2>&1; then
+    uci set uhttpd.main.cgi_prefix='/cgi-bin'
+    uci commit uhttpd
+  fi
+fi
+/etc/init.d/uhttpd enable 2>/dev/null || true
+/etc/init.d/uhttpd restart 2>/dev/null || /etc/init.d/uhttpd start 2>/dev/null || true
+UPORT=$(uci -q get uhttpd.main.listen_http 2>/dev/null | tr ' ' '\\n' | grep -v '^\\[' | head -n1 | sed 's/.*://')
+[ -z "$UPORT" ] && UPORT=80
+echo "    uhttpd يعمل على البورت $UPORT"
+
+echo ">>> تعديل /etc/wifidog.conf (السيرفر = الجسر المحلي)..."
+touch /etc/wifidog.conf
+sed -i \\\n  -e "s|^\\( *Hostname *\\).*|\\1\$GWIP|" \\\n  -e "s|^\\( *HTTPPort *\\).*|\\1        \$UPORT|" \\\n  -e "s|^\\( *SSLAvailable *\\).*|\\1no|" \\\n  -e "s|^\\( *Path *\\).*|\\1/cgi-bin/go?ep=/|" \\\n  /etc/wifidog.conf
+grep -q "FirewallRule allow to \$SRV" /etc/wifidog.conf || \\\n  sed -i "s|^FirewallRuleSet global {|FirewallRuleSet global {\\n    FirewallRule allow to \$SRV|" /etc/wifidog.conf
+grep -q "FirewallRule allow to \$GWIP" /etc/wifidog.conf || \\\n  sed -i "s|^FirewallRuleSet global {|FirewallRuleSet global {\\n    FirewallRule allow to \$GWIP|" /etc/wifidog.conf
+
+echo ">>> اختبار الجسر (لازم يرجع Pong)..."
+T=$(wget -q -T 25 -O - "http://127.0.0.1:\$UPORT/cgi-bin/go?ep=/ping/?gw_id=SELFTEST" 2>/dev/null || true)
+if [ "\$T" = "Pong" ]; then
+  echo "✅ الجسر شغال — الراوتر يوصل للسيرفر بنجاح"
+else
+  echo "⚠️ الجسر ما رجعش Pong — شغّل الأمر ده وابعت النتيجة:"
+  echo "   wget -O - 'http://127.0.0.1:\$UPORT/cgi-bin/go?ep=/ping/'"
+fi
+
+echo ">>> إعادة تشغيل wifidog..."
+/etc/init.d/wifidog restart 2>/dev/null || /etc/init.d/wifidog start 2>/dev/null || true
+echo ""
+echo "✅ تم الإصلاح — جرب تدخل على الواي فاي بالكارت تاني"
+`
 }
 
 // ── Route ─────────────────────────────────────────────────────
@@ -379,7 +536,17 @@ export async function GET(req: NextRequest) {
       })
     }
 
-    const text = buildConf(device, serverIp, serverPort)
+    if (type === 'relay-fix') {
+      const text = buildRelayFix(device, serverIp)
+      return new NextResponse(text, {
+        headers: {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'Content-Disposition': `attachment; filename="relay-fix-${device.gatewayId}.sh"`,
+        },
+      })
+    }
+
+    const text = buildConf(device, serverIp, serverPort).replace('__UHTTPD_PORT__', '80')
     return new NextResponse(text, {
       headers: {
         'Content-Type': 'text/plain; charset=utf-8',
