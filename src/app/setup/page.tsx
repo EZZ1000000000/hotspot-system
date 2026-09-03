@@ -33,15 +33,16 @@ function parseServerUrl(serverUrl: string) {
 }
 
 function buildWifidogConf(device: Device, serverUrl: string): string {
-  const { host, port, ssl } = parseServerUrl(serverUrl)
+  const { host } = parseServerUrl(serverUrl)
   const gwInterface  = device.gatewayInterface  || 'br-lan'
   const extInterface = device.externalInterface || 'eth0.1'
   const timeout      = device.clientTimeout     || 10
 
   return `# wifidog.conf — ${device.name}
 # GatewayID : ${device.gatewayId}
-# AuthServer: ${host}:${port}
-# تاريخ    : ${new Date().toISOString().slice(0, 10)}
+# AuthServer: ${host} عبر relay محلي (127.0.0.1:8081 → TLS+SNI)
+# ملاحظة    : السكريبت بيحط IP السيرفر الحقيقي في FirewallRule تلقائياً
+# تاريخ     : ${new Date().toISOString().slice(0, 10)}
 
 GatewayID           ${device.gatewayId}
 ExternalInterface   ${extInterface}
@@ -49,8 +50,9 @@ GatewayInterface    ${gwInterface}
 
 AuthServer {
     Hostname         ${host}
-    HTTPPort         ${port}
-    SSLAvailable     ${ssl ? 'yes' : 'no'}
+    HTTPPort         8081
+    SSLAvailable     yes
+    SSLPort          443
     Path             /api/wifidog/
 }
 
@@ -82,21 +84,19 @@ FirewallRuleSet locked-users {
 }
 
 function buildScript(device: Device, serverUrl: string, vpsIp: string): string {
-  const { host, port, ssl } = parseServerUrl(serverUrl)
-  const tunnelPort  = device.tunnelPort || 2201
+  const { host }     = parseServerUrl(serverUrl)
+  const tunnelPort   = device.tunnelPort || 2201
   const gwInterface  = device.gatewayInterface  || 'br-lan'
   const extInterface = device.externalInterface || 'eth0.1'
   const timeout      = device.clientTimeout     || 10
-  const totalSteps  = device.wifiSSID ? '5' : '4'
 
   // ── بلوك تغيير الـ SSID — بيتضاف بس لو الجهاز عنده wifiSSID ──
   const wifiBlock = device.wifiSSID ? `
 # ────────────────────────────────────────
-# [5/5] تغيير اسم الـ WiFi إلى: ${device.wifiSSID}
+# [7b] تغيير اسم الـ WiFi إلى: ${device.wifiSSID}
 # ────────────────────────────────────────
-echo ">>> [5/5] Setting WiFi SSID to: ${device.wifiSSID}..."
+echo ">>> Setting WiFi SSID to: ${device.wifiSSID}..."
 
-# طريقة 1: uci (OpenWrt)
 if command -v uci > /dev/null 2>&1; then
     UCI_IFACE=$(uci show wireless | grep '\\.ssid=' | head -1 | cut -d'.' -f1-2)
     if [ -n "$UCI_IFACE" ]; then
@@ -107,14 +107,12 @@ if command -v uci > /dev/null 2>&1; then
     fi
 fi
 
-# طريقة 2: hostapd_cli (live)
 if command -v hostapd_cli > /dev/null 2>&1; then
     hostapd_cli -i phy0-ap0 set ssid "${device.wifiSSID}" 2>/dev/null && \\
     hostapd_cli -i phy0-ap0 reload   2>/dev/null && \\
     echo "[ok] SSID changed via hostapd_cli" || true
 fi
 
-# طريقة 3: /etc/config/wireless مباشرة
 if [ -f /etc/config/wireless ]; then
     sed -i "s/option ssid .*/option ssid '${device.wifiSSID}'/" /etc/config/wireless
     echo "[ok] /etc/config/wireless updated"
@@ -125,58 +123,153 @@ echo "WiFi SSID -> ${device.wifiSSID}"
 
   return `#!/bin/sh
 # ================================================================
-# Hotspot Setup Script
+# Hotspot Setup Script v2 — wifidog + TLS Relay + SSH Tunnel
 # الجهاز   : ${device.name}
 # GatewayID: ${device.gatewayId}
-# السيرفر  : ${host}:${port}
+# السيرفر  : ${host}
 # VPS IP   : ${vpsIp}
 # SSH Port : ${tunnelPort}
 # تاريخ    : ${new Date().toISOString().slice(0, 10)}
 # ================================================================
-# للدخول على الراوتر لاحقاً من أي مكان:
-#   ssh root@${vpsIp}
-#   ssh root@localhost -p ${tunnelPort}
+# wifidog مش بيدعم TLS — فبنركب socat relay محلي:
+#   wifidog → 127.0.0.1:8081 → socat (TLS+SNI) → ${host}
 # ================================================================
 
-set -e
+AUTHSERV="${host}"
+GW_ID="${device.gatewayId}"
+GW_IF="${gwInterface}"
+EXT_IF="${extInterface}"
+CLIENT_TIMEOUT=${timeout}
+RELAY_PORT=8081
+REAL_IP_SAVED=""
 
 echo ""
 echo "========================================"
 echo " Hotspot Setup — ${device.name}"
-echo " Steps: ${totalSteps}${device.wifiSSID ? ` (+ WiFi rename -> ${device.wifiSSID})` : ''}"
 echo "========================================"
 
 # ────────────────────────────────────────
-# [1/${totalSteps}] تثبيت wifidog
+# [1/7] تثبيت wifidog + socat
 # ────────────────────────────────────────
-echo ">>> [1/${totalSteps}] Installing wifidog..."
-opkg update && opkg install wifidog
-opkg install iptables-zz-legacy 2>/dev/null || true
+echo ">>> [1/7] Installing wifidog + socat..."
+opkg update >/tmp/setup_opkg.log 2>&1
+opkg install wifidog >>/tmp/setup_opkg.log 2>&1
+opkg install socat   >>/tmp/setup_opkg.log 2>&1
+opkg install iptables-zz-legacy >/dev/null 2>&1 || true
+if ! command -v socat >/dev/null 2>&1; then
+    echo "❌ socat install failed — check /tmp/setup_opkg.log"
+    tail -5 /tmp/setup_opkg.log
+    exit 1
+fi
+echo "✅ wifidog + socat installed"
 
 # ────────────────────────────────────────
-# [2/${totalSteps}] كتابة /etc/wifidog.conf
+# [2/7] معرفة الـ IP الحقيقي للسيرفر
 # ────────────────────────────────────────
-echo ">>> [2/${totalSteps}] Writing /etc/wifidog.conf..."
-cat > /etc/wifidog.conf << 'WDEOF'
-GatewayID           ${device.gatewayId}
-ExternalInterface   ${extInterface}
-GatewayInterface    ${gwInterface}
+echo ">>> [2/7] Resolving auth server IP..."
+RAW=$(nslookup "$AUTHSERV" 2>/dev/null)
+REAL_IP=$(printf '%s' "$RAW" | awk -F': ' '/Name/{f=1;next} f&&/Address/{print $2}' | grep -oE '([0-9]{1,3}\\.){3}[0-9]{1,3}' | head -1)
+[ -z "$REAL_IP" ] && REAL_IP=$(printf '%s' "$RAW" | grep -oE '([0-9]{1,3}\\.){3}[0-9]{1,3}' | grep -v '^127\\.' | tail -1)
+if [ -z "$REAL_IP" ]; then
+    RAW2=$(nslookup "$AUTHSERV" 8.8.8.8 2>/dev/null)
+    REAL_IP=$(printf '%s' "$RAW2" | awk -F': ' '/Name/{f=1;next} f&&/Address/{print $2}' | grep -oE '([0-9]{1,3}\\.){3}[0-9]{1,3}' | head -1)
+fi
+if [ -z "$REAL_IP" ]; then
+    echo "❌ Cannot resolve $AUTHSERV — الراوتر مش واصل النت"
+    exit 1
+fi
+REAL_IP_SAVED="$REAL_IP"
+echo "✅ Auth server IP: $REAL_IP"
+
+# ────────────────────────────────────────
+# [3/7] DNS: الراوتر محلياً → relay | العملاء → طبيعي
+# ────────────────────────────────────────
+echo ">>> [3/7] Setting up DNS (relay + client protection)..."
+touch /etc/hosts
+sed -i "/[[:space:]]\${AUTHSERV}$/d" /etc/hosts 2>/dev/null
+echo "127.0.0.1 \${AUTHSERV}" >> /etc/hosts
+uci -q set dhcp.@dnsmasq[0].nohosts='1'
+uci -q commit dhcp
+/etc/init.d/dnsmasq restart >/dev/null 2>&1
+echo "✅ DNS ready (router → relay, clients → normal)"
+
+# ────────────────────────────────────────
+# [4/7] خدمة الـ relay (socat + watchdog)
+# ────────────────────────────────────────
+echo ">>> [4/7] Setting up TLS relay service..."
+cat > /usr/bin/hotspot-relay.sh << 'RELEOF'
+#!/bin/sh
+# Hotspot TLS Relay Watchdog — socat 127.0.0.1:8081 → TLS → AuthServer:443
+AUTHSERV="__AUTHSERV__"
+GW_ID="__GWID__"
+RELAY_PORT=8081
+CUR_IP=""
+REAL_IP_SAVED=""
+while true; do
+    NEW_IP=""
+    RAW=$(nslookup "$AUTHSERV" 2>/dev/null)
+    NEW_IP=$(printf '%s' "$RAW" | awk -F': ' '/Name/{f=1;next} f&&/Address/{print $2}' | grep -oE '([0-9]{1,3}\\.){3}[0-9]{1,3}' | head -1)
+    [ -z "$NEW_IP" ] && NEW_IP=$(printf '%s' "$RAW" | grep -oE '([0-9]{1,3}\\.){3}[0-9]{1,3}' | grep -v '^127\\.' | tail -1)
+    LISTENING=$(netstat -tln 2>/dev/null | grep ":$RELAY_PORT " | grep 127.0.0.1 | wc -l)
+    if [ "$LISTENING" = "0" ] || { [ -n "$NEW_IP" ] && [ "$NEW_IP" != "$CUR_IP" ]; }; then
+        [ -z "$NEW_IP" ] && NEW_IP=$CUR_IP
+        killall socat 2>/dev/null
+        sleep 1
+        if [ -n "$NEW_IP" ]; then
+            socat "TCP-LISTEN:$RELAY_PORT,bind=127.0.0.1,fork,reuseaddr" \\
+                  "OPENSSL:$NEW_IP:443,verify=0,openssl-snihost=$AUTHSERV" >/dev/null 2>&1 &
+            CUR_IP="$NEW_IP"
+        fi
+    fi
+    sleep 60
+done
+RELEOF
+sed -i "s|__AUTHSERV__|\${AUTHSERV}|; s|__GWID__|\${GW_ID}|" /usr/bin/hotspot-relay.sh
+chmod +x /usr/bin/hotspot-relay.sh
+
+cat > /etc/init.d/hotspot-relay << 'INITEOF'
+#!/bin/sh /etc/rc.common
+START=99
+STOP=10
+USE_PROCD=1
+start_service() {
+    procd_open_instance
+    procd_set_param command /bin/sh /usr/bin/hotspot-relay.sh
+    procd_set_param respawn 3600 5 0
+    procd_close_instance
+}
+INITEOF
+chmod +x /etc/init.d/hotspot-relay
+/etc/init.d/hotspot-relay enable
+/etc/init.d/hotspot-relay restart >/dev/null 2>&1 || /etc/init.d/hotspot-relay start
+sleep 3
+echo "✅ relay service installed"
+
+# ────────────────────────────────────────
+# [5/7] كتابة /etc/wifidog.conf
+# ────────────────────────────────────────
+echo ">>> [5/7] Writing /etc/wifidog.conf..."
+cat > /etc/wifidog.conf << WDEOF
+GatewayID           \${GW_ID}
+ExternalInterface   \${EXT_IF}
+GatewayInterface    \${GW_IF}
 
 AuthServer {
-    Hostname         ${host}
-    HTTPPort         ${port}
-    SSLAvailable     ${ssl ? 'yes' : 'no'}
+    Hostname         \${AUTHSERV}
+    HTTPPort         8081
+    SSLAvailable     yes
+    SSLPort          443
     Path             /api/wifidog/
 }
 
 GatewayPort         2060
 HTTPDMaxConn        253
-ClientTimeout       ${timeout}
+ClientTimeout       \${CLIENT_TIMEOUT}
 CheckInterval       30
 PopularServers      kernel.org,ieee.org
 
 FirewallRuleSet global {
-    FirewallRule allow to ${host}
+    FirewallRule allow to \${REAL_IP}
 }
 FirewallRuleSet validating-users {
     FirewallRule allow to 0.0.0.0/0
@@ -194,21 +287,30 @@ FirewallRuleSet locked-users {
     FirewallRule block to 0.0.0.0/0
 }
 WDEOF
-
 echo "✅ wifidog.conf written"
 
 # ────────────────────────────────────────
-# [3/${totalSteps}] تشغيل wifidog
+# [6/7] تشغيل wifidog + اختبار الـ relay
 # ────────────────────────────────────────
-echo ">>> [3/${totalSteps}] Starting wifidog..."
+echo ">>> [6/7] Starting wifidog + testing relay..."
 /etc/init.d/wifidog enable
 /etc/init.d/wifidog restart
-echo "✅ wifidog running"
+sleep 4
+
+RESP=$(printf "GET /api/wifidog/ping?gw_id=\${GW_ID} HTTP/1.0\\r\\nUser-Agent: WiFiDog 1.3.0\\r\\nHost: \${AUTHSERV}\\r\\n\\r\\n" \\
+      | socat - "TCP:127.0.0.1:\${RELAY_PORT}" 2>/dev/null)
+if printf '%s' "$RESP" | grep -q "Pong"; then
+    echo "✅ RELAY TEST PASSED — Pong received!"
+else
+    echo "⚠️  relay test failed — diagnostics:"
+    netstat -tln 2>/dev/null | grep "\${RELAY_PORT}" || echo "relay not listening!"
+    nslookup "\${AUTHSERV}" 2>/dev/null | tail -4
+fi
 
 # ────────────────────────────────────────
-# [4/${totalSteps}] النفق العكسي SSH
+# [7/7] النفق العكسي SSH
 # ────────────────────────────────────────
-echo ">>> [4/${totalSteps}] Setting up reverse SSH tunnel..."
+echo ">>> [7/7] Setting up reverse SSH tunnel..."
 
 mkdir -p /root/.ssh
 chmod 700 /root/.ssh
@@ -258,8 +360,9 @@ echo ""
 echo "════════════════════════════════════════════════"
 echo " ✅ التثبيت اكتمل!"
 echo ""
-echo " GatewayID  : ${device.gatewayId}"
-echo " AuthServer : ${host}:${port}"
+echo " GatewayID  : \${GW_ID}"
+echo " AuthServer : \${AUTHSERV} (عبر relay محلي)"
+echo " Real IP    : \${REAL_IP}"
 echo " VPS        : ${vpsIp}"
 echo " Tunnel Port: ${tunnelPort}"${device.wifiSSID ? `\necho " WiFi SSID  : ${device.wifiSSID}"` : ''}
 echo ""
