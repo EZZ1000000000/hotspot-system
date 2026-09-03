@@ -870,7 +870,7 @@ export default function DashboardPage() {
               </div>
 
               <div className="form-grid-2" style={{marginBottom:18}}>
-                <div><label style={S.label}>عدد الكروت</label><input style={S.input} type="number" min={1} max={500} value={gen.count} onChange={e=>setGen({...gen,count:+e.target.value})}/></div>
+                <div><label style={S.label}>عدد الكروت</label><input style={S.input} type="number" min={1} max={5000} value={gen.count} onChange={e=>setGen({...gen,count:+e.target.value})}/></div>
                 {!gen.isUnlimited&&<div><label style={S.label}>نوع الباقة</label><select style={{...S.input}} value={gen.packageType} onChange={e=>setGen({...gen,packageType:e.target.value})}><option value="BOTH">داتا + وقت</option><option value="DATA_ONLY">داتا فقط</option><option value="TIME_ONLY">وقت فقط</option></select></div>}
                 {!gen.isUnlimited&&gen.packageType!=='TIME_ONLY'&&(<div><label style={S.label}>الداتا (MB)</label><input style={S.input} type="number" min={1} value={gen.dataLimitMB} onChange={e=>setGen({...gen,dataLimitMB:+e.target.value})}/></div>)}
                 {!gen.isUnlimited&&gen.packageType!=='DATA_ONLY'&&(<div><label style={S.label}>الوقت (دقيقة)</label><input style={S.input} type="number" min={1} value={gen.timeLimitMin} onChange={e=>setGen({...gen,timeLimitMin:+e.target.value})}/></div>)}

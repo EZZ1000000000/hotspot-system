@@ -66,9 +66,12 @@ function defaultTemplate(placeName: string, wifiName: string, logoEmoji: string)
   <div class="success-box" id="success-box">
     <div class="success-icon">&#9989;</div>
     <div class="success-title">تم التفعيل!</div>
-    <div class="success-sub">جاري تحويلك للإنترنت...</div>
+    <div class="success-sub" id="success-sub">جاري فتح الإنترنت...</div>
     <div class="success-wifi">&#128246; متصل بـ ${wifiName}</div>
     <div class="progress"><div class="progress-fill"></div></div>
+    <div id="gw-fallback" style="display:none;margin-top:14px;padding:12px 14px;background:#070B12;border-radius:10px;border:1px solid #1C2A40;font-size:12px;color:#6B8CAE;line-height:1.8">
+      لو الإنترنت مافتحش: اتأكد إنك متصل بشبكة <strong style="color:#00D4FF">${wifiName}</strong> وافتح أي موقع — هيطلب منك الكود مرة واحدة بس
+    </div>
   </div>
 </div>
 
@@ -93,8 +96,17 @@ async function doLogin(){
       var token=data.token;
       var gw=params.gw_address;
       var port=params.gw_port||'2060';
-      if(gw){setTimeout(function(){window.location.replace('http://'+gw+':'+port+'/wifidog/auth?token='+token);},500);}
-      else{setTimeout(function(){window.location.href='/session?token='+token;},500);}
+      if(gw){
+        // نظهر نص المساعدة الاحتياطي أثناء محاولة الوصول للراوتر
+        var fb=document.getElementById('gw-fallback'); if(fb) fb.style.display='block';
+        // الراوتر هو اللي بيفتح النت — بنروح له، وهو يرجعنا لصفحة الجلسة تلقائياً
+        setTimeout(function(){window.location.replace('http://'+gw+':'+port+'/wifidog/auth?token='+token);},600);
+        // لو الراوتر مردش خلال 5 ثواني (مثلاً مش reachable) روح لصفحة الجلسة على طول بدل صفحة خطأ
+        setTimeout(function(){window.location.replace('/session?token='+token);},5000);
+      }else{
+        // مفيش عنوان راوتر (البورتال اتفتح مباشرة) — صفحة الجلسة على طول
+        setTimeout(function(){window.location.replace('/session?token='+token);},600);
+      }
     }else{
       showError(data.message||'الكود غير صحيح أو منتهي الصلاحية');
       btn.disabled=false;btn.innerHTML='&#128275; تفعيل الكود';

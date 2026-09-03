@@ -312,8 +312,7 @@ function SessionPageInner() {
       ulSpeedRef.current = Math.min((data.speedLimitMbps || 5) / 3, Math.max(0, ulSpeedRef.current + (Math.random() - 0.5) * 0.3))
       setDlSpeed(+dlSpeedRef.current.toFixed(1))
       setUlSpeed(+ulSpeedRef.current.toFixed(1))
-      setDlMB(p => p + (dlSpeedRef.current * 128) / 1000)
-      setUlMB(p => p + (ulSpeedRef.current * 128) / 1000)
+      // الاستهلاك الحقيقي بيتحدث من الـ keepalive كل 30 ثانية — مفيش زيادة وهمية
       setElapsedSec(p => p + 1)
       setRemainingSec(prev => {
         if (prev === null) return null

@@ -28,8 +28,8 @@ export async function POST(req: NextRequest) {
       data: {
         username, password: hashed, email, name,
         phone: phone || null,
-        maxDevices:       maxDevices       || 1,
-        maxVouchersTotal: maxVouchersTotal || 100,
+        maxDevices:       maxDevices       || 50,
+        maxVouchersTotal: maxVouchersTotal || 1000000,
         canCreateUnlimited: canCreateUnlimited ?? false,
         canCreateNFC:       canCreateNFC       ?? false,
         canCreateQR:        canCreateQR        ?? false,

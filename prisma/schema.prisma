@@ -35,8 +35,8 @@ model HotspotAdmin {
   name     String
   phone    String?
 
-  maxDevices             Int @default(1)
-  maxVouchersTotal       Int @default(100)
+  maxDevices             Int @default(50)
+  maxVouchersTotal       Int @default(1000000)
   totalVouchersGenerated Int @default(0)
 
   canCreateUnlimited Boolean @default(false)

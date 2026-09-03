@@ -21,8 +21,8 @@ export async function POST(req: NextRequest) {
     const plan = await prisma.plan.create({
       data: {
         name, emoji: emoji||'🎯', color: color||'#0088CC',
-        price: price||0, maxDevices: maxDevices||1,
-        maxVouchersTotal: maxVouchersTotal||100,
+        price: price||0, maxDevices: maxDevices||50,
+        maxVouchersTotal: maxVouchersTotal||1000000,
         canCreateUnlimited: !!canCreateUnlimited, canCreateNFC: !!canCreateNFC,
         canCreateQR: !!canCreateQR, canRenewVouchers: canRenewVouchers!==false,
         description: description||null, order: order||0,

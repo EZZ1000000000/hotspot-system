@@ -44,9 +44,9 @@ export async function POST(req: NextRequest) {
         phone:              phone || null,
         password:           hashed,
         superAdminId:       superAdmin.id,
-        // Free Plan
-        maxDevices:         1,
-        maxVouchersTotal:   30,
+        // مساحة مفتوحة — كل كافيه لحد مليون كارت
+        maxDevices:         50,
+        maxVouchersTotal:   1000000,
         canCreateUnlimited: false,
         canCreateNFC:       false,
         canCreateQR:        false,

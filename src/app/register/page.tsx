@@ -5,10 +5,10 @@ import { useSearchParams } from 'next/navigation'
 type Plan = { id:string; name:string; emoji:string; color:string; price:number; maxDevices:number; maxVouchersTotal:number }
 
 const FALLBACK_PLANS: Plan[] = [
-  { id:'free', emoji:'🚀', name:'مجاني', price:0, color:'#6B8CAE', maxDevices:1, maxVouchersTotal:30 },
-  { id:'basic', emoji:'⚡', name:'أساسي', price:99, color:'#00D4FF', maxDevices:3, maxVouchersTotal:200 },
-  { id:'pro', emoji:'👑', name:'احترافي', price:249, color:'#7c3aed', maxDevices:10, maxVouchersTotal:1000 },
-  { id:'enterprise', emoji:'🏢', name:'مؤسسي', price:499, color:'#f59e0b', maxDevices:50, maxVouchersTotal:9999 },
+  { id:'free', emoji:'🚀', name:'مجاني', price:0, color:'#6B8CAE', maxDevices:50, maxVouchersTotal:1000000 },
+  { id:'basic', emoji:'⚡', name:'أساسي', price:99, color:'#00D4FF', maxDevices:50, maxVouchersTotal:1000000 },
+  { id:'pro', emoji:'👑', name:'احترافي', price:249, color:'#7c3aed', maxDevices:50, maxVouchersTotal:1000000 },
+  { id:'enterprise', emoji:'🏢', name:'مؤسسي', price:499, color:'#f59e0b', maxDevices:50, maxVouchersTotal:1000000 },
 ]
 
 const S = {

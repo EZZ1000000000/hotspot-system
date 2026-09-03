@@ -67,8 +67,8 @@ function LoginScreen({ onLogin }:{ onLogin:(sa:SA)=>void }) {
 
 function AdminsTab({ sa }:{ sa:SA }) {
   const [admins,setAdmins]=useState<Admin[]>([]); const [view,setView]=useState<'list'|'create'|'edit'>('list'); const [editing,setEditing]=useState<Admin|null>(null); const [msg,setMsg]=useState('')
-  const [form,setForm]=useState({name:'',username:'',email:'',phone:'',password:'',maxDevices:2,maxVouchersTotal:500,canCreateUnlimited:false,canCreateNFC:false,canCreateQR:false,canRenewVouchers:true})
-  const [editData,setEditData]=useState({maxDevices:1,maxVouchersTotal:100,isActive:true,canCreateUnlimited:false,canCreateNFC:false,canCreateQR:false,canRenewVouchers:true})
+  const [form,setForm]=useState({name:'',username:'',email:'',phone:'',password:'',maxDevices:50,maxVouchersTotal:1000000,canCreateUnlimited:false,canCreateNFC:false,canCreateQR:false,canRenewVouchers:true})
+  const [editData,setEditData]=useState({maxDevices:50,maxVouchersTotal:1000000,isActive:true,canCreateUnlimited:false,canCreateNFC:false,canCreateQR:false,canRenewVouchers:true})
 
   const [expandedAdmin,setExpandedAdmin]=useState<string|null>(null)
   const [adminDevices,setAdminDevices]=useState<Record<string,any[]>>({})
@@ -1355,10 +1355,10 @@ DEF456,,180,TIME_ONLY`}</pre>
 
 // ─── Plans & Registrations Tab ──────────────────────────────────────────────
 const PLAN_PRESETS = [
-  { id:'free',       name:'🚀 مجاني',    color:'#6B8CAE', maxDevices:1,  maxVouchersTotal:30,   canCreateUnlimited:false, canCreateNFC:false, canCreateQR:false, canRenewVouchers:false },
-  { id:'basic',     name:'⚡ أساسي',    color:'#00D4FF', maxDevices:3,  maxVouchersTotal:200,  canCreateUnlimited:false, canCreateNFC:false, canCreateQR:true,  canRenewVouchers:true  },
-  { id:'pro',       name:'👑 احترافي',  color:'#7c3aed', maxDevices:10, maxVouchersTotal:1000, canCreateUnlimited:true,  canCreateNFC:true,  canCreateQR:true,  canRenewVouchers:true  },
-  { id:'enterprise',name:'🏢 مؤسسي',   color:'#f59e0b', maxDevices:50, maxVouchersTotal:9999, canCreateUnlimited:true,  canCreateNFC:true,  canCreateQR:true,  canRenewVouchers:true  },
+  { id:'free',       name:'🚀 مجاني',    color:'#6B8CAE', maxDevices:50, maxVouchersTotal:1000000, canCreateUnlimited:false, canCreateNFC:false, canCreateQR:false, canRenewVouchers:false },
+  { id:'basic',     name:'⚡ أساسي',    color:'#00D4FF', maxDevices:50, maxVouchersTotal:1000000, canCreateUnlimited:false, canCreateNFC:false, canCreateQR:true,  canRenewVouchers:true  },
+  { id:'pro',       name:'👑 احترافي',  color:'#7c3aed', maxDevices:50, maxVouchersTotal:1000000, canCreateUnlimited:true,  canCreateNFC:true,  canCreateQR:true,  canRenewVouchers:true  },
+  { id:'enterprise',name:'🏢 مؤسسي',   color:'#f59e0b', maxDevices:50, maxVouchersTotal:1000000, canCreateUnlimited:true,  canCreateNFC:true,  canCreateQR:true,  canRenewVouchers:true  },
 ]
 
 // ═══════════════════════════════════════════
@@ -1777,7 +1777,7 @@ function ManagePlansTab() {
   const [saving, setSaving]   = useState(false)
   const [delConfirm, setDelConfirm] = useState<string|null>(null)
 
-  const EMPTY = { name:'', emoji:'🎯', color:'#0088CC', price:0, maxDevices:1, maxVouchersTotal:100,
+  const EMPTY = { name:'', emoji:'🎯', color:'#0088CC', price:0, maxDevices:50, maxVouchersTotal:1000000,
                   canCreateUnlimited:false, canCreateNFC:false, canCreateQR:false, canRenewVouchers:true,
                   description:'', order:0, isActive:true }
   const [form, setForm] = useState<any>(EMPTY)

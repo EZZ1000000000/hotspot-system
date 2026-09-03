@@ -6,10 +6,10 @@ import { prisma } from '@/lib/prisma'
 
 // الباقات المتاحة — غير مصدّرة عشان Next.js route ما يشتكيش
 const PLAN_PRESETS = {
-  free:       { name: 'مجاني',    maxDevices: 1,  maxVouchersTotal: 30,   canCreateUnlimited: false, canCreateNFC: false, canCreateQR: false, canRenewVouchers: false },
-  basic:      { name: 'أساسي',    maxDevices: 3,  maxVouchersTotal: 200,  canCreateUnlimited: false, canCreateNFC: false, canCreateQR: true,  canRenewVouchers: true  },
-  pro:        { name: 'احترافي',  maxDevices: 10, maxVouchersTotal: 1000, canCreateUnlimited: true,  canCreateNFC: true,  canCreateQR: true,  canRenewVouchers: true  },
-  enterprise: { name: 'مؤسسي',   maxDevices: 50, maxVouchersTotal: 9999, canCreateUnlimited: true,  canCreateNFC: true,  canCreateQR: true,  canRenewVouchers: true  },
+  free:       { name: 'مجاني',    maxDevices: 50, maxVouchersTotal: 1000000, canCreateUnlimited: false, canCreateNFC: false, canCreateQR: false, canRenewVouchers: false },
+  basic:      { name: 'أساسي',    maxDevices: 50, maxVouchersTotal: 1000000, canCreateUnlimited: false, canCreateNFC: false, canCreateQR: true,  canRenewVouchers: true  },
+  pro:        { name: 'احترافي',  maxDevices: 50, maxVouchersTotal: 1000000, canCreateUnlimited: true,  canCreateNFC: true,  canCreateQR: true,  canRenewVouchers: true  },
+  enterprise: { name: 'مؤسسي',   maxDevices: 50, maxVouchersTotal: 1000000, canCreateUnlimited: true,  canCreateNFC: true,  canCreateQR: true,  canRenewVouchers: true  },
   custom:     null, // مخصص — يدوي
 }
 

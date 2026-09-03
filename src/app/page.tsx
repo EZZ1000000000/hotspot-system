@@ -4,10 +4,10 @@ import { useState, useEffect } from 'react'
 type Plan = { id:string; name:string; emoji:string; color:string; price:number; maxDevices:number; maxVouchersTotal:number; canCreateUnlimited:boolean; canCreateNFC:boolean; canCreateQR:boolean; canRenewVouchers:boolean; description?:string }
 
 const FALLBACK_PLANS: Plan[] = [
-  { id:'free',       emoji:'🚀', name:'مجاني',   price:0,   color:'#6B8CAE', maxDevices:1,  maxVouchersTotal:30,   canCreateUnlimited:false, canCreateNFC:false, canCreateQR:false,  canRenewVouchers:false },
-  { id:'basic',      emoji:'⚡', name:'أساسي',   price:99,  color:'#00D4FF', maxDevices:3,  maxVouchersTotal:200,  canCreateUnlimited:false, canCreateNFC:false, canCreateQR:true,   canRenewVouchers:true  },
-  { id:'pro',        emoji:'👑', name:'احترافي', price:249, color:'#7c3aed', maxDevices:10, maxVouchersTotal:1000, canCreateUnlimited:true,  canCreateNFC:true,  canCreateQR:true,   canRenewVouchers:true  },
-  { id:'enterprise', emoji:'🏢', name:'مؤسسي',  price:499, color:'#f59e0b', maxDevices:50, maxVouchersTotal:9999, canCreateUnlimited:true,  canCreateNFC:true,  canCreateQR:true,   canRenewVouchers:true  },
+  { id:'free',       emoji:'🚀', name:'مجاني',   price:0,   color:'#6B8CAE', maxDevices:50, maxVouchersTotal:1000000, canCreateUnlimited:false, canCreateNFC:false, canCreateQR:false,  canRenewVouchers:false },
+  { id:'basic',      emoji:'⚡', name:'أساسي',   price:99,  color:'#00D4FF', maxDevices:50, maxVouchersTotal:1000000, canCreateUnlimited:false, canCreateNFC:false, canCreateQR:true,   canRenewVouchers:true  },
+  { id:'pro',        emoji:'👑', name:'احترافي', price:249, color:'#7c3aed', maxDevices:50, maxVouchersTotal:1000000, canCreateUnlimited:true,  canCreateNFC:true,  canCreateQR:true,   canRenewVouchers:true  },
+  { id:'enterprise', emoji:'🏢', name:'مؤسسي',  price:499, color:'#f59e0b', maxDevices:50, maxVouchersTotal:1000000, canCreateUnlimited:true,  canCreateNFC:true,  canCreateQR:true,   canRenewVouchers:true  },
 ]
 
 export default function LandingPage() {
