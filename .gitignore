@@ -9,3 +9,4 @@ hotspot.db
 data/
 *.s3snap
 nohup.out
+tsconfig.tsbuildinfo
