@@ -99,10 +99,14 @@ async function doLogin(){
       if(gw){
         // نظهر نص المساعدة الاحتياطي أثناء محاولة الوصول للراوتر
         var fb=document.getElementById('gw-fallback'); if(fb) fb.style.display='block';
-        // الراوتر هو اللي بيفتح النت — بنروح له، وهو يرجعنا لصفحة الجلسة تلقائياً
+        // 1) الطريقة القياسية: عنوان الراوتر المباشر — هو اللي بيفتح النت ويرجعنا لصفحة الجلسة
         setTimeout(function(){window.location.replace('http://'+gw+':'+port+'/wifidog/auth?token='+token);},600);
-        // لو الراوتر مردش خلال 5 ثواني (مثلاً مش reachable) روح لصفحة الجلسة على طول بدل صفحة خطأ
-        setTimeout(function(){window.location.replace('/session?token='+token);},5000);
+        // 2) لو الصفحة لسه موجودة بعد 3 ثواني (الراوتر مش reachable من الموبايل)
+        //    بنستخدم اختطاف البورت 80: أي عنوان على بورت 80 بيختطفه wifidog على الراوتر
+        //    وياخد نفس أمر التفعيل — دي نفس الطريقة اللي دخلت بيها البورتال أصلاً
+        setTimeout(function(){window.location.replace('http://192.0.2.1/wifidog/auth?token='+token);},3000);
+        // 3) آخر احتياط بعد 6 ثواني: صفحة الجلسة على السيرفر مباشرة
+        setTimeout(function(){window.location.replace('/session?token='+token);},6500);
       }else{
         // مفيش عنوان راوتر (البورتال اتفتح مباشرة) — صفحة الجلسة على طول
         setTimeout(function(){window.location.replace('/session?token='+token);},600);

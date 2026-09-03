@@ -7,9 +7,11 @@ export const dynamic = 'force-dynamic'
 function buildConf(d: {
   gatewayId: string; gatewayInterface: string; externalInterface: string
   clientTimeout: number; httpMaxConn: number
+  routerIp?: string
 }, ip: string, port: number): string {
   return [
     `GatewayID           ${d.gatewayId}`,
+    `GatewayAddress      ${d.routerIp || '192.168.1.1'}`,
     `ExternalInterface   ${d.externalInterface}`,
     `GatewayInterface    ${d.gatewayInterface}`,
     ``,
