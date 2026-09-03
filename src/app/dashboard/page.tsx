@@ -382,110 +382,19 @@ function PlanRequestTab({ adminId }: { adminId: string }) {
 
 function RouterSetupTab({ devices }: { devices: Device[] }) {
   const [sel,setSel]=useState<Device|null>(null); const [copied,setCopied]=useState(''); const [showConf,setShowConf]=useState(false)
-  const VPS_IP   = '16.16.159.119'
-  const VPS_PORT = '3000'
+  const [scriptText,setScriptText]=useState(''); const [fixText,setFixText]=useState(''); const [tabKind,setTabKind]=useState<'fix'|'install'>('fix')
 
-  const buildConf=(d:Device)=>[
-    `GatewayID           ${d.gatewayId}`,
-    `ExternalInterface   ${d.externalInterface||'eth0.1'}`,
-    `GatewayInterface    ${d.gatewayInterface||'br-lan'}`,
-    ``,
-    `AuthServer {`,
-    `    Hostname         ${VPS_IP}`,
-    `    HTTPPort         ${VPS_PORT}`,
-    `    SSLAvailable     no`,
-    `    Path             /api/wifidog/`,
-    `}`,
-    ``,
-    `GatewayPort         2060`,
-    `HTTPDMaxConn        253`,
-    `ClientTimeout       ${d.clientTimeout||10}`,
-    `CheckInterval       60`,
-    `PopularServers      kernel.org,ieee.org`,
-    ``,
-    `FirewallRuleSet global {`,
-    `    FirewallRule allow to ${VPS_IP}`,
-    `}`,
-    ``,
-    `FirewallRuleSet validating-users {`,
-    `    FirewallRule allow to 0.0.0.0/0`,
-    `}`,
-    ``,
-    `FirewallRuleSet known-users {`,
-    `    FirewallRule allow to 0.0.0.0/0`,
-    `}`,
-    ``,
-    `FirewallRuleSet unknown-users {`,
-    `    FirewallRule allow tcp to ${VPS_IP}`,
-    `    FirewallRule block udp port 53`,
-    `    FirewallRule block tcp port 53`,
-    `    FirewallRule block udp port 67`,
-    `    FirewallRule block tcp port 67`,
-    `}`,
-    ``,
-    `FirewallRuleSet locked-users {`,
-    `    FirewallRule block to 0.0.0.0/0`,
-    `}`,
-  ].join('\n')
+  // نجيب السكربتات الرسمية من السيرفر — مصدر واحد للحقيقة
+  // (الجسر المحلي + wifidog.conf الصحيح — بيصلح خطأ "We did not get a valid answer")
+  useEffect(()=>{
+    if(!sel) return
+    setScriptText(''); setFixText('')
+    fetch(`/api/admin/config?deviceId=${sel.id}&type=script`).then(r=>r.text()).then(setScriptText).catch(()=>{})
+    fetch(`/api/admin/config?deviceId=${sel.id}&type=relay-fix`).then(r=>r.text()).then(setFixText).catch(()=>{})
+  },[sel?.id])
 
-  const buildSSHCommands=(d:Device)=>[
-    `# ══════════════════════════════════════════`,
-    `# إعداد wifidog — ${d.name}`,
-    `# GatewayID: ${d.gatewayId}  |  Tunnel Port: ${d.tunnelPort||'—'}`,
-    `# ══════════════════════════════════════════`,
-    ``,
-    `# 1. تثبيت wifidog`,
-    `opkg update && opkg install wifidog`,
-    ``,
-    `# 2. امسح أي hosts entry قديم`,
-    `sed -i '/${VPS_IP}/d' /etc/hosts`,
-    ``,
-    `# 3. اكتب الـ config`,
-    `cat > /etc/wifidog.conf << 'WDEOF'`,
-    buildConf(d),
-    `WDEOF`,
-    ``,
-    `# 4. شغّل wifidog`,
-    `/etc/init.d/wifidog enable`,
-    `/etc/init.d/wifidog restart`,
-    ``,
-    `# 5. اختبر الاتصال`,
-    `sleep 3 && wget -q -O - "http://${VPS_IP}:${VPS_PORT}/api/wifidog/ping/?gw_id=${d.gatewayId}"`,
-    `# المفروض يرد: Pong`,
-    ``,
-    `# ── SSH Keygen للوصول البعيد ──`,
-    `# 6. ولّد مفتاح SSH للراوتر لو مش موجود`,
-    `mkdir -p /root/.ssh`,
-    `[ -f /root/.ssh/id_rsa ] || dropbearkey -t rsa -f /root/.ssh/id_rsa`,
-    ``,
-    `# 7. استخرج الـ public key`,
-    `PUB=$(dropbearkey -y -f /root/.ssh/id_rsa | grep ^ssh-rsa)`,
-    `echo "=== Public Key ==="`,
-    `echo "$PUB"`,
-    `echo "=================="`,
-    ``,
-    `# 8. سجّل الـ key على السيرفر تلقائياً`,
-    `wget -q -O /tmp/keyreg.json \\`,
-    `  --post-data="{\\"gatewayId\\":\\"${d.gatewayId}\\",\\"publicKey\\":\\"$PUB\\"}" \\`,
-    `  --header="Content-Type: application/json" \\`,
-    `  "http://${VPS_IP}:${VPS_PORT}/api/admin/devices/register-key"`,
-    `cat /tmp/keyreg.json`,
-    `# المفروض يرد: {"ok":true,"tunnelPort":${d.tunnelPort||'XXXX'}}`,
-    ``,
-    `# ✅ خلاص! للوصول للراوتر من أي مكان:`,
-    `# ssh root@${VPS_IP} -p ${d.tunnelPort||'XXXX'}  ← من الـ VPS`,
-    ``,
-    `# ── فتح نفق SSH للوصول البعيد (مهم!) ──`,
-    `# 9. شغّل النفق للسيرفر (لازم تشغّله بعد ما السكريبت يخلص)`,
-    `ssh -i /root/.ssh/id_rsa -o StrictHostKeyChecking=no -o ServerAliveInterval=60 -R ${d.tunnelPort||'XXXX'}:localhost:22 ubuntu@${VPS_IP} -N &`,
-    ``,
-    `# 10. اجعل النفق يشتغل تلقائياً عند كل إعادة تشغيل`,
-    `grep -q 'ServerAliveInterval=60' /etc/rc.local 2>/dev/null || echo 'ssh -i /root/.ssh/id_rsa -o StrictHostKeyChecking=no -o ServerAliveInterval=60 -R ${d.tunnelPort||'XXXX'}:localhost:22 ubuntu@${VPS_IP} -N &' >> /etc/rc.local`,
-    `echo '✅ تم! النفق شغّال — للدخول من السيرفر: ssh root@localhost -p ${d.tunnelPort||'XXXX'}'`,
-  ].join('\n')
-
-  const copy=async(text:string,id:string)=>{await navigator.clipboard.writeText(text);setCopied(id);setTimeout(()=>setCopied(''),2500)}
-  const downloadConf=(d:Device)=>{const b=new Blob([buildConf(d)],{type:'text/plain'});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=`wifidog-${d.gatewayId}.conf`;a.click()}
+  const copy=async(text:string,id:string)=>{try{await navigator.clipboard.writeText(text)}catch(e){const ta=document.createElement('textarea');ta.value=text;document.body.appendChild(ta);ta.select();document.execCommand('copy');document.body.removeChild(ta)};setCopied(id);setTimeout(()=>setCopied(''),2500)}
+  const download=(text:string,name:string)=>{const b=new Blob([text],{type:'text/plain'});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=name;a.click()}
 
   if(devices.length===0) return <div style={{...S.card,textAlign:'center',padding:60,color:'#6B8CAE'}}><div style={{fontSize:52,marginBottom:14}}>🖥️</div><p>أضف جهاز من تاب "الأجهزة" أولاً</p></div>
 
@@ -502,7 +411,7 @@ function RouterSetupTab({ devices }: { devices: Device[] }) {
       )}
       {devices.length===1&&!sel&&(()=>{setTimeout(()=>setSel(devices[0]),0);return null})()}
       {(sel||devices.length===1)&&(()=>{
-        const d=sel||devices[0]; const conf=buildConf(d); const sshCmds=buildSSHCommands(d)
+        const d=sel||devices[0]
         return (
           <div key={d.id}>
             <div style={{...S.card,marginBottom:12,padding:'14px 18px'}}>
@@ -521,24 +430,54 @@ function RouterSetupTab({ devices }: { devices: Device[] }) {
                 <a href={`/portal?gw_id=${d.gatewayId}`} target="_blank" style={{...S.btn('#111B2D','#00D4FF'),border:'1px solid #1C2A40',textDecoration:'none',fontSize:12,padding:'8px 14px'}}>👁️ معاينة</a>
               </div>
             </div>
-            <div style={{...S.card,marginBottom:12}}>
-              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12,flexWrap:'wrap',gap:10}}>
-                <div><div style={{fontSize:14,fontWeight:700,color:'#E2F0FB'}}>⚡ سكريبت التسطيب الكامل</div><div style={{fontSize:11,color:'#6B8CAE',marginTop:2}}>شغّله من SSH على الراوتر — يسطب wifidog + يولد SSH key</div></div>
-                <button onClick={()=>copy(sshCmds,'cmds-'+d.id)} style={{...S.btn(copied==='cmds-'+d.id?'#00E676':'linear-gradient(135deg,#0088CC,#00D4FF)','#000'),padding:'10px 20px',fontSize:13}}>{copied==='cmds-'+d.id?'✅ تم النسخ!':'📋 نسخ'}</button>
-              </div>
-              <pre style={{background:'#020608',border:'1px solid #0C1420',borderRadius:10,padding:14,fontFamily:'JetBrains Mono,monospace',fontSize:12,color:'#7dd3fc',lineHeight:1.8,overflowX:'auto',maxHeight:420,direction:'ltr',textAlign:'left',margin:0,whiteSpace:'pre-wrap',wordBreak:'break-word'}}>{sshCmds}</pre>
+
+            {/* اختيار نوع السكريبت */}
+            <div style={{display:'flex',gap:8,marginBottom:12}}>
+              <button onClick={()=>setTabKind('fix')} style={{padding:'10px 18px',borderRadius:10,cursor:'pointer',fontFamily:'Cairo,sans-serif',fontSize:13,fontWeight:800,background:tabKind==='fix'?'linear-gradient(135deg,#FF6B35,#FF9800)':'#0C1420',border:`1px solid ${tabKind==='fix'?'#FF9800':'#1C2A40'}`,color:tabKind==='fix'?'#000':'#6B8CAE'}}>🚑 إصلاح مشكلة الاتصال</button>
+              <button onClick={()=>setTabKind('install')} style={{padding:'10px 18px',borderRadius:10,cursor:'pointer',fontFamily:'Cairo,sans-serif',fontSize:13,fontWeight:700,background:tabKind==='install'?'linear-gradient(135deg,#0088CC,#00D4FF)':'#0C1420',border:`1px solid ${tabKind==='install'?'#00D4FF':'#1C2A40'}`,color:tabKind==='install'?'#000':'#6B8CAE'}}>⚡ تسطيب جديد كامل</button>
             </div>
-            <div style={{...S.card,background:'rgba(0,136,204,0.04)',border:'1.5px solid rgba(0,136,204,0.2)'}}>
-              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
-                <div style={{fontSize:13,fontWeight:700,color:'#00D4FF'}}>📄 wifidog.conf فقط</div>
-                <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-                  <button onClick={()=>copy(conf,'conf-'+d.id)} style={{...S.btn(copied==='conf-'+d.id?'#00E676':'#0C1420',copied==='conf-'+d.id?'#000':'#00D4FF'),border:'1px solid rgba(0,212,255,0.3)',fontSize:11,padding:'6px 12px'}}>{copied==='conf-'+d.id?'✅':'📋 نسخ'}</button>
-                  <button onClick={()=>downloadConf(d)} style={{...S.btn('#0C1420','#6B8CAE'),border:'1px solid #1C2A40',fontSize:11,padding:'6px 12px'}}>⬇️ تحميل</button>
-                  <button onClick={()=>setShowConf(p=>!p)} style={{...S.btn('#0C1420','#6B8CAE'),border:'1px solid #1C2A40',fontSize:11,padding:'6px 12px'}}>{showConf?'▲':'▼ عرض'}</button>
+
+            {tabKind==='fix'&&(
+              <div style={{...S.card,marginBottom:12,border:'1.5px solid rgba(255,152,0,0.35)',background:'rgba(255,152,0,0.05)'}}>
+                <div style={{fontSize:14,fontWeight:800,color:'#FF9800',marginBottom:8}}>🚑 سكريبت إصلاح الاتصال (relay-fix)</div>
+                <div style={{fontSize:12,color:'#6B8CAE',lineHeight:2,marginBottom:12}}>
+                  شغّل السكريبت ده لو: دخلت الكرت من الموبايل وظهر <strong style={{color:'#E2F0FB'}}>«تم التفعيل»</strong> وبعدها النت مافتحش
+                  أو ظهر صفحة <strong style={{color:'#E2F0FB'}}>Error: We did not get a valid answer from the central server</strong>.
+                  <br/>السبب: نسخة wifidog على الراوتر مش بتتكلم HTTPS — السكريبت بيركّب جسر محلي على الراوتر بيحل المشكلة نهائياً،
+                  وبيقيس الاتصال بنفسه ويقولك النتيجة في الآخر.
                 </div>
+                <div style={{background:'rgba(0,0,0,0.3)',borderRadius:10,padding:'10px 14px',marginBottom:12,fontSize:12,color:'#E2F0FB',lineHeight:2.2}}>
+                  <strong style={{color:'#FF9800'}}>طريقة التشغيل — 3 خطوات:</strong><br/>
+                  1️⃣ من كمبيوتر متصل بنفس شبكة الراوتر: <code style={{background:'#020608',padding:'2px 8px',borderRadius:6,color:'#7dd3fc',direction:'ltr',display:'inline-block'}}>ssh root@{d.routerIp||'192.168.1.1'}</code><br/>
+                  2️⃣ الصق الأمر ده واضغط Enter:<br/>
+                  <code style={{background:'#020608',padding:'4px 8px',borderRadius:6,color:'#7dd3fc',direction:'ltr',display:'block',marginTop:6,whiteSpace:'pre-wrap',wordBreak:'break-all'}}>wget -q -O /tmp/fix.sh "https://{typeof window!=='undefined'?window.location.host:''}/api/admin/config?deviceId={d.id}&type=relay-fix" && sh /tmp/fix.sh</code><br/>
+                  3️⃣ استنى رسالة <strong style={{color:'#00E676'}}>✅ تم الإصلاح بنجاح</strong> — وبعدها اعزل الواي فاي من الموبايل وارجع اتصل وادخل الكرت
+                </div>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,flexWrap:'wrap',gap:8}}>
+                  <div style={{fontSize:12,color:'#6B8CAE'}}>محتوى السكريبت {fixText?`(${Math.round(fixText.length/1024)}KB)`:''}</div>
+                  <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                    <button onClick={()=>copy(fixText,'fix-'+d.id)} style={{...S.btn(copied==='fix-'+d.id?'#00E676':'#0C1420',copied==='fix-'+d.id?'#000':'#FF9800'),border:'1px solid rgba(255,152,0,0.4)',fontSize:11,padding:'6px 12px'}}>{copied==='fix-'+d.id?'✅ تم النسخ':'📋 نسخ السكريبت'}</button>
+                    <button onClick={()=>download(fixText,`relay-fix-${d.gatewayId}.sh`)} style={{...S.btn('#0C1420','#6B8CAE'),border:'1px solid #1C2A40',fontSize:11,padding:'6px 12px'}}>⬇️ تحميل</button>
+                  </div>
+                </div>
+                <pre style={{background:'#020608',border:'1px solid #0C1420',borderRadius:10,padding:14,fontFamily:'JetBrains Mono,monospace',fontSize:11,color:'#7dd3fc',lineHeight:1.8,overflowX:'auto',maxHeight:380,direction:'ltr',textAlign:'left',margin:0,whiteSpace:'pre-wrap',wordBreak:'break-word'}}>{fixText||'⏳ جاري تحميل السكريبت...'}</pre>
               </div>
-              {showConf&&<pre style={{background:'#020608',border:'1px solid #0C1420',borderRadius:8,padding:12,fontFamily:'monospace',fontSize:11,color:'#00D4FF',lineHeight:1.8,overflowX:'auto',maxHeight:260,direction:'ltr',textAlign:'left',margin:'12px 0 0'}}>{conf}</pre>}
-            </div>
+            )}
+
+            {tabKind==='install'&&(
+              <div style={{...S.card,marginBottom:12}}>
+                <div style={{fontSize:14,fontWeight:700,color:'#E2F0FB',marginBottom:8}}>⚡ سكريبت التسطيب الكامل</div>
+                <div style={{fontSize:12,color:'#6B8CAE',lineHeight:2,marginBottom:12}}>للأجهزة الجديدة بس — بيسطب wifidog + الجسر المحلي + مزامنة اسم الشبكة (2.4GHz و 5GHz) ويختبر كل حاجة تلقائياً</div>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,flexWrap:'wrap',gap:8}}>
+                  <div style={{fontSize:12,color:'#6B8CAE'}}>محتوى السكريبت {scriptText?`(${Math.round(scriptText.length/1024)}KB)`:''}</div>
+                  <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                    <button onClick={()=>copy(scriptText,'cmds-'+d.id)} style={{...S.btn(copied==='cmds-'+d.id?'#00E676':'linear-gradient(135deg,#0088CC,#00D4FF)',copied==='cmds-'+d.id?'#000':'#000'),padding:'8px 16px',fontSize:12}}>{copied==='cmds-'+d.id?'✅ تم النسخ':'📋 نسخ'}</button>
+                    <button onClick={()=>download(scriptText,`install-${d.gatewayId}.sh`)} style={{...S.btn('#0C1420','#6B8CAE'),border:'1px solid #1C2A40',fontSize:11,padding:'6px 12px'}}>⬇️ تحميل</button>
+                  </div>
+                </div>
+                <pre style={{background:'#020608',border:'1px solid #0C1420',borderRadius:10,padding:14,fontFamily:'JetBrains Mono,monospace',fontSize:11,color:'#7dd3fc',lineHeight:1.8,overflowX:'auto',maxHeight:380,direction:'ltr',textAlign:'left',margin:0,whiteSpace:'pre-wrap',wordBreak:'break-word'}}>{scriptText||'⏳ جاري تحميل السكريبت...'}</pre>
+              </div>
+            )}
           </div>
         )
       })()}
@@ -870,7 +809,7 @@ export default function DashboardPage() {
               </div>
 
               <div className="form-grid-2" style={{marginBottom:18}}>
-                <div><label style={S.label}>عدد الكروت</label><input style={S.input} type="number" min={1} max={5000} value={gen.count} onChange={e=>setGen({...gen,count:+e.target.value})}/></div>
+                <div><label style={S.label}>عدد الكروت (لحد 100,000 في المرة — السعة الكلية مليون)</label><input style={S.input} type="number" min={1} max={100000} value={gen.count} onChange={e=>setGen({...gen,count:+e.target.value})}/></div>
                 {!gen.isUnlimited&&<div><label style={S.label}>نوع الباقة</label><select style={{...S.input}} value={gen.packageType} onChange={e=>setGen({...gen,packageType:e.target.value})}><option value="BOTH">داتا + وقت</option><option value="DATA_ONLY">داتا فقط</option><option value="TIME_ONLY">وقت فقط</option></select></div>}
                 {!gen.isUnlimited&&gen.packageType!=='TIME_ONLY'&&(<div><label style={S.label}>الداتا (MB)</label><input style={S.input} type="number" min={1} value={gen.dataLimitMB} onChange={e=>setGen({...gen,dataLimitMB:+e.target.value})}/></div>)}
                 {!gen.isUnlimited&&gen.packageType!=='DATA_ONLY'&&(<div><label style={S.label}>الوقت (دقيقة)</label><input style={S.input} type="number" min={1} value={gen.timeLimitMin} onChange={e=>setGen({...gen,timeLimitMin:+e.target.value})}/></div>)}

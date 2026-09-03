@@ -439,68 +439,188 @@ esac
 `
 }
 
-// ── سكريبت إصلاح سريع للراوترات المثبّتة بالفعل ──
-// بيركّب الجسر + بيعدّل wifidog.conf من غير إعادة تثبيت كاملة
-function buildRelayFix(d: { gatewayId: string; routerIp?: string }, ip: string): string {
+// ── سكريبت إصلاح شامل للراوترات المثبّتة بالفعل ──
+// بيصلّح السبب الجذري لمشكلة "We did not get a valid answer from the central server":
+// wifidog 1.3.0 مش بيتكلم HTTPS خالص — السكريبت بيركّب جسر محلي (uhttpd CGI + wget)
+// وبيكتب /etc/wifidog.conf كامل من جديد بحيث wifidog يتكلم مع الجسر المحلي بس
+function buildRelayFix(d: {
+  gatewayId: string; routerIp?: string; gatewayInterface?: string; externalInterface?: string
+  clientTimeout?: number; httpMaxConn?: number
+}, serverHost: string): string {
+  const gwId     = d.gatewayId
   const routerIp = d.routerIp || '192.168.1.1'
+  const extIf    = d.externalInterface || 'eth0.1'
+  const lanIf    = d.gatewayInterface || 'br-lan'
+  const cTimeout = d.clientTimeout ?? 10
+  const maxConn  = d.httpMaxConn ?? 253
   return `#!/bin/sh
 # ================================================================
-#  relay-fix.sh — إصلاح اتصال wifidog بالسيرفر عبر جسر HTTPS
-#  GatewayID : ${d.gatewayId}
-#  السيرفر   : ${ip}
+#  relay-fix.sh — إصلاح اتصال wifidog بالسيرفر عبر جسر HTTPS محلي
+#  GatewayID : ${gwId}
+#  السيرفر   : ${serverHost}
+#  المشكلة   : wifidog مش بيتكلم HTTPS — وده كان بيعمل خطأ
+#              "We did not get a valid answer from the central server"
 #
-#  التشغيل:
+#  التشغيل على الراوتر:
 #    scp relay-fix.sh root@${routerIp}:/tmp/
-#    ssh root@${routerIp} "sh /tmp/relay-fix.sh"
+#    ssh root@${routerIp}
+#    sh /tmp/relay-fix.sh
 # ================================================================
-set -e
-SRV="${ip}"
+GWID="${gwId}"
+SRV="${serverHost}"
 GWIP="${routerIp}"
+EXTIF="${extIf}"
+LANIF="${lanIf}"
+CTIMEOUT="${cTimeout}"
+MAXCONN="${maxConn}"
+BRIDGE_OK=0
 
-echo ">>> تثبيت دعم HTTPS لـ wget..."
-opkg update >/dev/null 2>&1 || true
-opkg install uhttpd >/dev/null 2>&1 || true
-opkg install libustream-mbedtls ca-bundle ca-certificates >/dev/null 2>&1 || \\\n  opkg install libustream-openssl ca-bundle ca-certificates >/dev/null 2>&1 || true
+diag() {
+  echo ""
+  echo "=============== تشخيص — ابعت النص ده لو لسه في مشكلة ==============="
+  echo "--- uhttpd ---"
+  uci show uhttpd.main 2>/dev/null || echo "(مفيش uhttpd config)"
+  netstat -tln 2>/dev/null | grep -E ':(80|8080|2060) ' || echo "(مفيش مستمع على 80/8080/2060)"
+  echo "--- /etc/wifidog.conf ---"
+  cat /etc/wifidog.conf 2>/dev/null || echo "(الملف مش موجود)"
+  echo "--- اختبار الجسر المحلي ---"
+  wget -q -T 10 -O - "http://127.0.0.1:80/cgi-bin/go?ep=/ping/?gw_id=SELFTEST" 2>&1 || echo "(فشل)"
+  echo ""
+  echo "--- اختبار السيرفر مباشرة HTTPS ---"
+  wget -q -T 20 -O - --no-check-certificate "https://${serverHost}/api/wifidog/ping/" 2>&1 || echo "(فشل)"
+  echo "===================================================================="
+}
 
-echo ">>> كتابة الجسر /www/cgi-bin/go..."
+echo "=================================================="
+echo "  إصلاح اتصال wifidog — $GWID"
+echo "=================================================="
+
+echo ">>> [1/7] تثبيت الحزم المطلوبة (ممكن ياخد دقيقة)..."
+opkg update >/tmp/rf_opkg.log 2>&1
+opkg install wifidog >>/tmp/rf_opkg.log 2>&1
+opkg install uhttpd >>/tmp/rf_opkg.log 2>&1
+opkg install libustream-mbedtls ca-bundle ca-certificates >>/tmp/rf_opkg.log 2>&1 || \
+  opkg install libustream-openssl ca-bundle ca-certificates >>/tmp/rf_opkg.log 2>&1
+
+echo ">>> [2/7] اختبار وصول الراوتر للسيرفر (HTTPS)..."
+SRVTEST=$(wget -q -T 20 -O - --no-check-certificate "https://${serverHost}/api/wifidog/ping/" 2>/dev/null)
+if [ "$SRVTEST" != "Pong" ]; then
+  echo ""
+  echo "❌ الراوتر نفسه مش قادر يوصل للسيرفر!"
+  echo "   ده معناه إن المشكلة في إنترنت الراوتر أو DNS — مش في wifidog"
+  echo "   جرب الأمر ده وشوف النتيجة:"
+  echo "   wget -O - --no-check-certificate 'https://${serverHost}/api/wifidog/ping/'"
+  diag
+  exit 1
+fi
+echo "    ✅ الراوتر يوصل للسيرفر بنجاح"
+
+echo ">>> [3/7] كتابة الجسر /www/cgi-bin/go..."
 mkdir -p /www/cgi-bin
 cat > /www/cgi-bin/go << 'RELAY_EOF'
-${relayShellScript(ip)}
+${relayShellScript(serverHost)}
 RELAY_EOF
 chmod +x /www/cgi-bin/go
 
-echo ">>> ضبط uhttpd..."
+echo ">>> [4/7] ضبط uhttpd..."
 if uci -q get uhttpd.main >/dev/null 2>&1; then
   if ! uci -q get uhttpd.main.cgi_prefix >/dev/null 2>&1; then
     uci set uhttpd.main.cgi_prefix='/cgi-bin'
     uci commit uhttpd
   fi
 fi
-/etc/init.d/uhttpd enable 2>/dev/null || true
-/etc/init.d/uhttpd restart 2>/dev/null || /etc/init.d/uhttpd start 2>/dev/null || true
-UPORT=$(uci -q get uhttpd.main.listen_http 2>/dev/null | tr ' ' '\\n' | grep -v '^\\[' | head -n1 | sed 's/.*://')
+/etc/init.d/uhttpd enable 2>/dev/null
+/etc/init.d/uhttpd restart 2>/dev/null || /etc/init.d/uhttpd start 2>/dev/null
+sleep 1
+UPORT=$(uci -q get uhttpd.main.listen_http 2>/dev/null | tr ' ' '\n' | grep -v '^\[' | head -n1 | sed 's/.*://')
 [ -z "$UPORT" ] && UPORT=80
 echo "    uhttpd يعمل على البورت $UPORT"
 
-echo ">>> تعديل /etc/wifidog.conf (السيرفر = الجسر المحلي)..."
-touch /etc/wifidog.conf
-sed -i \\\n  -e "s|^\\( *Hostname *\\).*|\\1\$GWIP|" \\\n  -e "s|^\\( *HTTPPort *\\).*|\\1        \$UPORT|" \\\n  -e "s|^\\( *SSLAvailable *\\).*|\\1no|" \\\n  -e "s|^\\( *Path *\\).*|\\1/cgi-bin/go?ep=/|" \\\n  /etc/wifidog.conf
-grep -q "FirewallRule allow to \$SRV" /etc/wifidog.conf || \\\n  sed -i "s|^FirewallRuleSet global {|FirewallRuleSet global {\\n    FirewallRule allow to \$SRV|" /etc/wifidog.conf
-grep -q "FirewallRule allow to \$GWIP" /etc/wifidog.conf || \\\n  sed -i "s|^FirewallRuleSet global {|FirewallRuleSet global {\\n    FirewallRule allow to \$GWIP|" /etc/wifidog.conf
+echo ">>> [5/7] كتابة /etc/wifidog.conf جديدة (السيرفر = الجسر المحلي)..."
+cp /etc/wifidog.conf /etc/wifidog.conf.bak 2>/dev/null
+cat > /etc/wifidog.conf << CONF_EOF
+GatewayID           ${gwId}
+GatewayAddress      ${routerIp}
+ExternalInterface   ${extIf}
+GatewayInterface    ${lanIf}
 
-echo ">>> اختبار الجسر (لازم يرجع Pong)..."
-T=$(wget -q -T 25 -O - "http://127.0.0.1:\$UPORT/cgi-bin/go?ep=/ping/?gw_id=SELFTEST" 2>/dev/null || true)
-if [ "\$T" = "Pong" ]; then
-  echo "✅ الجسر شغال — الراوتر يوصل للسيرفر بنجاح"
+AuthServer {
+    Hostname        ${routerIp}
+    HTTPPort        __UPORT__
+    SSLAvailable    no
+    Path            /cgi-bin/go?ep=/
+}
+
+GatewayPort         2060
+HTTPDMaxConn        ${maxConn}
+ClientTimeout       ${cTimeout}
+CheckInterval       120
+
+PopularServers      kernel.org,ieee.org
+
+FirewallRuleSet global {
+    FirewallRule allow to ${serverHost}
+    FirewallRule allow to ${routerIp}
+}
+FirewallRuleSet validating-users {
+    FirewallRule allow to 0.0.0.0/0
+}
+FirewallRuleSet known-users {
+    FirewallRule allow to 0.0.0.0/0
+}
+FirewallRuleSet unknown-users {
+    FirewallRule block udp port 53
+    FirewallRule block tcp port 53
+    FirewallRule block udp port 67
+    FirewallRule block tcp port 67
+}
+FirewallRuleSet locked-users {
+    FirewallRule block to 0.0.0.0/0
+}
+CONF_EOF
+sed -i "s/__UPORT__/$UPORT/" /etc/wifidog.conf
+
+echo ">>> [6/7] اختبار الجسر (لازم يرجع Pong)..."
+T=$(wget -q -T 25 -O - "http://127.0.0.1:$UPORT/cgi-bin/go?ep=/ping/?gw_id=SELFTEST" 2>/dev/null)
+if [ "$T" = "Pong" ]; then
+  BRIDGE_OK=1
+  echo "    ✅ الجسر شغال تمام"
 else
-  echo "⚠️ الجسر ما رجعش Pong — شغّل الأمر ده وابعت النتيجة:"
-  echo "   wget -O - 'http://127.0.0.1:\$UPORT/cgi-bin/go?ep=/ping/'"
+  echo "    البورت $UPORT مش شغال — بجرب 8080..."
+  uci set uhttpd.main.listen_http='0.0.0.0:8080'
+  uci commit uhttpd
+  /etc/init.d/uhttpd restart 2>/dev/null
+  sleep 1
+  UPORT=8080
+  sed -i "s/HTTPPort        .*/HTTPPort        8080/" /etc/wifidog.conf
+  T=$(wget -q -T 25 -O - "http://127.0.0.1:8080/cgi-bin/go?ep=/ping/?gw_id=SELFTEST" 2>/dev/null)
+  if [ "$T" = "Pong" ]; then
+    BRIDGE_OK=1
+    echo "    ✅ الجسر شغال على 8080"
+  else
+    echo "    ❌ الجسر ما رجعش Pong — شوف التشخيص تحت"
+  fi
 fi
 
-echo ">>> إعادة تشغيل wifidog..."
-/etc/init.d/wifidog restart 2>/dev/null || /etc/init.d/wifidog start 2>/dev/null || true
+echo ">>> [7/7] إعادة تشغيل wifidog..."
+/etc/init.d/wifidog enable 2>/dev/null
+/etc/init.d/wifidog restart 2>/dev/null || /etc/init.d/wifidog start 2>/dev/null
+
 echo ""
-echo "✅ تم الإصلاح — جرب تدخل على الواي فاي بالكارت تاني"
+if [ "$BRIDGE_OK" = "1" ]; then
+  echo "======================================"
+  echo "  ✅ تم الإصلاح بنجاح!"
+  echo ""
+  echo "  الخطوة الأخيرة من الموبايل:"
+  echo "  1. اعزل شبكة الواي فاي"
+  echo "  2. ارجع اتصل تاني"
+  echo "  3. افتح أي موقع → ادخل الكرت"
+  echo "  4. النت هيفتح عادي"
+  echo "======================================"
+else
+  diag
+fi
+echo ""
 `
 }
 

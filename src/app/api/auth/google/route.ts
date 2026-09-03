@@ -138,7 +138,7 @@ export async function GET(req: NextRequest) {
         password:           randomBytes(20).toString('hex'),
         superAdminId:       superAdmin.id,
         maxDevices:         1,
-        maxVouchersTotal:   30,
+        maxVouchersTotal:   1000000,
         canCreateUnlimited: false,
         canCreateNFC:       false,
         canCreateQR:        false,

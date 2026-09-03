@@ -45,6 +45,12 @@ export async function POST(req: NextRequest) {
     if (count > remaining)
       return NextResponse.json({ error: `تجاوزت الحد المسموح. المتبقي: ${remaining} كارت` }, { status: 403 })
 
+    // سقف الدفعة الواحدة — السعة الكلية لكل كافيه 1,000,000 كارت
+    // (التوليد الكمي بيتم على دفعات — كل طلب لحد 100 ألف)
+    const MAX_PER_REQUEST = 100000
+    if (!count || count < 1 || count > MAX_PER_REQUEST)
+      return NextResponse.json({ error: `عدد الكروت لازم يكون من 1 لـ 100,000 في الطلب الواحد` }, { status: 400 })
+
     // احسب تاريخ الانتهاء
     let expiry: Date | null = null
     if (expiresAt) {
@@ -87,59 +93,45 @@ export async function POST(req: NextRequest) {
     if (codes.length < count)
       return NextResponse.json({ error: 'تعذر توليد كودات فريدة، حاول مرة أخرى' }, { status: 500 })
 
-    const vouchers = await prisma.$transaction(
-      codes.map((code, i) => {
+    // إدراج سريع على دفعات — createMany أسرع بكتير من create المتكرر
+    const host       = process.env.NEXT_PUBLIC_URL || 'http://localhost:3000'
+    const CHUNK_SIZE = 2000
+    let inserted = 0
+    for (let i = 0; i < codes.length; i += CHUNK_SIZE) {
+      const chunk = codes.slice(i, i + CHUNK_SIZE).map(code => ({
+        code,
+        packageType:    finalPkgType as any,
+        voucherType:    finalVchrType as any,
+        dataLimitMB:    finalDataLimit,
+        timeLimitMin:   finalTimeLimit,
+        speedLimitMbps: speedLimitMbps || null,
+        maxUsageCount:  maxUsageCount  || 1,
+        expiresAt:      expiry,
+        validityDays:   validityDays   || null,
+        isRenewable:    isRenewable    || false,
         // للـ NFC — nfcPayload هو الكود نفسه (الراوتر بيقراه ويدخله تلقائي)
         // للـ QR  — qrPayload هو URL بيحتوي الكود
-        const host       = process.env.NEXT_PUBLIC_URL || 'http://localhost:3000'
-        const nfcPayload = finalVchrType === 'NFC' ? code : null
-        const qrPayload  = finalVchrType === 'QR'
-          ? `${host}/portal?code=${code}`
-          : null
-
-        return prisma.voucher.create({
-          data: {
-            code,
-            packageType:    finalPkgType as any,
-            voucherType:    finalVchrType as any,
-            dataLimitMB:    finalDataLimit,
-            timeLimitMin:   finalTimeLimit,
-            speedLimitMbps: speedLimitMbps || null,
-            maxUsageCount:  maxUsageCount  || 1,
-            expiresAt:      expiry,
-            validityDays:   validityDays   || null,
-            isRenewable:    isRenewable    || false,
-            nfcPayload,
-            qrPayload,
-            deviceId:       deviceId || null,
-            hotspotAdminId,
-            printBatch,
-          },
-        })
-      })
-    )
+        nfcPayload:     finalVchrType === 'NFC' ? code : null,
+        qrPayload:      finalVchrType === 'QR' ? `${host}/portal?code=${code}` : null,
+        deviceId:       deviceId || null,
+        hotspotAdminId,
+        printBatch,
+      }))
+      const res = await prisma.voucher.createMany({ data: chunk })
+      inserted += res.count
+    }
 
     await prisma.hotspotAdmin.update({
       where: { id: hotspotAdminId },
-      data: { totalVouchersGenerated: { increment: count } },
+      data: { totalVouchersGenerated: { increment: inserted } },
     })
 
     return NextResponse.json({
       success: true,
       printBatch,
-      count:   vouchers.length,
+      count:   inserted,
       isQR:    finalVchrType === 'QR',
-      vouchers: vouchers.map(v => ({
-        id:            v.id,
-        code:          v.code,
-        voucherType:   v.voucherType,
-        packageType:   v.packageType,
-        dataLimitMB:   v.dataLimitMB,
-        timeLimitMin:  v.timeLimitMin,
-        expiresAt:     v.expiresAt,
-        nfcPayload:    v.nfcPayload,
-        qrPayload:     v.qrPayload,
-      })),
+      vouchers: [],
     })
   } catch (err: any) {
     console.error('[generate]', err)

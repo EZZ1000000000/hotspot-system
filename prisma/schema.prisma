@@ -384,7 +384,7 @@ model Plan {
   color       String   @default("#0088CC")
   price       Float    @default(0)  // السعر الشهري
   maxDevices          Int     @default(1)
-  maxVouchersTotal    Int     @default(100)
+  maxVouchersTotal    Int     @default(1000000)
   canCreateUnlimited  Boolean @default(false)
   canCreateNFC        Boolean @default(false)
   canCreateQR         Boolean @default(false)

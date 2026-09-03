@@ -51,11 +51,20 @@ export async function GET(req: NextRequest) {
   if (session?.token) {
     // نرجع HTML بدل redirect عشان نتجنب mixed-content HTTP→HTTPS issue
     // wifidog بيوجه للـ portal عبر HTTP ، والـ JS redirect هو اللي ينقله لـ HTTPS
+    // لو الإطار framed (البورتال بيفتح الراوتر في iframe مخفي) → نخرج الإطار كله
+    // لصفحة الجلسة عشان المستخدم يشوف صفحة النجاح مش جوه إطار مخفي
     const sessionUrl = `${serverUrl}/session?token=${session.token}`
     const html = `<!DOCTYPE html>
 <html><head><meta charset="utf-8">
-<meta http-equiv="refresh" content="0;url=${sessionUrl}">
-<script>window.location.replace(${JSON.stringify(sessionUrl)})<\/script>
+<script>
+(function(){
+  var u=${JSON.stringify(sessionUrl)};
+  try{
+    if(window.top&&window.top!==window.self){window.top.location.replace(u);return;}
+  }catch(e){}
+  window.location.replace(u);
+})();
+<\/script>
 </head><body style="font-family:sans-serif;text-align:center;padding:40px;background:#070B12;color:#00D4FF">
 <p>جاري توجيهك... النت بيتفتح الآن ✅</p>
 </body></html>`

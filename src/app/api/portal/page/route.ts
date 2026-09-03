@@ -69,8 +69,10 @@ function defaultTemplate(placeName: string, wifiName: string, logoEmoji: string)
     <div class="success-sub" id="success-sub">جاري فتح الإنترنت...</div>
     <div class="success-wifi">&#128246; متصل بـ ${wifiName}</div>
     <div class="progress"><div class="progress-fill"></div></div>
-    <div id="gw-fallback" style="display:none;margin-top:14px;padding:12px 14px;background:#070B12;border-radius:10px;border:1px solid #1C2A40;font-size:12px;color:#6B8CAE;line-height:1.8">
-      لو الإنترنت مافتحش: اتأكد إنك متصل بشبكة <strong style="color:#00D4FF">${wifiName}</strong> وافتح أي موقع — هيطلب منك الكود مرة واحدة بس
+    <div id="gw-tips" style="display:none;margin-top:14px;padding:12px 14px;background:#070B12;border-radius:10px;border:1px solid #1C2A40;font-size:12px;color:#6B8CAE;line-height:2">
+      لو النت مافتحش خلال ثواني جرّب:<br>
+      <button id="retry-btn" onclick="retryGateway()" style="margin-top:8px;padding:10px 16px;background:linear-gradient(135deg,#0088CC,#00D4FF);border:none;border-radius:10px;color:#000;font-weight:700;font-size:13px;cursor:pointer">&#128260; إعادة محاولة فتح النت</button>
+      <button onclick="window.location.replace('/session?token='+window.__tk)" style="margin-top:8px;padding:10px 16px;background:#111B2D;border:1px solid #1C2A40;border-radius:10px;color:#6B8CAE;font-weight:700;font-size:13px;cursor:pointer">&#128203; صفحة الجلسة</button>
     </div>
   </div>
 </div>
@@ -94,21 +96,41 @@ async function doLogin(){
       document.getElementById('form-box').style.display='none';
       document.getElementById('success-box').style.display='block';
       var token=data.token;
+      window.__tk=token;
       var gw=params.gw_address;
       var port=params.gw_port||'2060';
+      // ── فتح النت عن طريق الراوتر داخل iframe مخفي ──
+      // ليه iframe؟ لو الراوتر أظهر صفحة خطأ (wifidog القديم) المستخدم
+      // مبيعلقش على صفحة الراوتر — الصفحة دي تفضل شغالة وتقدر تعيد المحاولة
+      function tryGateway(u){
+        var f=document.getElementById('gwframe');
+        if(!f){
+          f=document.createElement('iframe');
+          f.id='gwframe';
+          f.style.cssText='position:fixed;left:-9999px;top:-9999px;width:320px;height:240px;border:0;opacity:0';
+          document.body.appendChild(f);
+        }
+        f.src=u;
+      }
+      window.retryGateway=function(){
+        var u=window.__retryAlt?'http://192.0.2.1/wifidog/auth?token='+token:'http://'+gw+':'+port+'/wifidog/auth?token='+token;
+        window.__retryAlt=!window.__retryAlt;
+        tryGateway(u);
+        var el=document.getElementById('success-sub');if(el)el.textContent='جاري إعادة المحاولة...';
+      };
       if(gw){
-        // نظهر نص المساعدة الاحتياطي أثناء محاولة الوصول للراوتر
-        var fb=document.getElementById('gw-fallback'); if(fb) fb.style.display='block';
-        // 1) الطريقة القياسية: عنوان الراوتر المباشر — هو اللي بيفتح النت ويرجعنا لصفحة الجلسة
-        setTimeout(function(){window.location.replace('http://'+gw+':'+port+'/wifidog/auth?token='+token);},600);
-        // 2) لو الصفحة لسه موجودة بعد 3 ثواني (الراوتر مش reachable من الموبايل)
-        //    بنستخدم اختطاف البورت 80: أي عنوان على بورت 80 بيختطفه wifidog على الراوتر
-        //    وياخد نفس أمر التفعيل — دي نفس الطريقة اللي دخلت بيها البورتال أصلاً
-        setTimeout(function(){window.location.replace('http://192.0.2.1/wifidog/auth?token='+token);},3000);
-        // 3) آخر احتياط بعد 6 ثواني: صفحة الجلسة على السيرفر مباشرة
-        setTimeout(function(){window.location.replace('/session?token='+token);},6500);
+        tryGateway('http://'+gw+':'+port+'/wifidog/auth?token='+token);
+        // لو الراوتر نجح هيرجعنا لصفحة الجلسة تلقائياً (اختراق من الإطار)
+        // لو لسه هنا بعد 5 ثواني → نظهر أزرار المساعدة بدل ما نسيب المستخدم معلق
+        setTimeout(function(){
+          var el=document.getElementById('success-sub');
+          var tips=document.getElementById('gw-tips');
+          if(el&&tips&&tips.style.display==='none'){
+            el.textContent='التفعيل تم ✅ — لو النت مافتحش جرّب الزر تحت';
+            tips.style.display='block';
+          }
+        },5000);
       }else{
-        // مفيش عنوان راوتر (البورتال اتفتح مباشرة) — صفحة الجلسة على طول
         setTimeout(function(){window.location.replace('/session?token='+token);},600);
       }
     }else{
