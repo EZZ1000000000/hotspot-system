@@ -50,13 +50,17 @@ function buildConf(d: {
 
 // ── install script ────────────────────────────────────────────
 function buildScript(d: {
+  id?: string
   gatewayId: string; gatewayInterface: string; externalInterface: string
   clientTimeout: number; httpMaxConn: number; routerIp: string; tunnelPort?: number | null
+  wifiSSID?: string | null
 }, ip: string, port: number): string {
   const GW         = d.gatewayId
   const IP         = ip
   const PORT       = String(port)
   const ROUT       = d.routerIp || '192.168.1.1'
+  const WANT_SSID  = d.wifiSSID || 'Free-WiFi'
+  const DEV_ID     = d.id || ''
   // tunnelPort = البورت الـ reverse tunnel بيتعلق عليه على السيرفر
   // مثلاً 2201 يعني: reverse tunnel بورت 2201 على سيرفر SSH خارجي
   const TUNNEL_PORT   = String(d.tunnelPort || 0)
@@ -192,14 +196,54 @@ GW_ID="${GW}"
 SERVER_IP="${IP}"
 SERVER_PORT="${PORT}"
 
-echo ""
+echo "" 
 echo ">>> تثبيت wifidog..."
 opkg update  2>/dev/null || true
 opkg install wifidog 2>/dev/null || true
+# دعم HTTPS للـ wget (لازم لمزامنة الـ SSID مع السيرفر)
+opkg install libustream-mbedtls ca-bundle ca-certificates 2>/dev/null || opkg install libustream-openssl ca-bundle ca-certificates 2>/dev/null || true
 
 echo ">>> كتابة /etc/wifidog.conf..."
 rm -f /etc/wifidog.conf
 ${confLines}
+
+echo ">>> تغيير اسم الشبكتين (2.4GHz + 5GHz) إلى: ${shellQuote(WANT_SSID)}"
+# تطبيق اسم الشبكة المحدد في النظام على كل واجهات الواي فاي
+i=0
+while uci get wireless.@wifi-iface[$i] >/dev/null 2>&1; do
+  uci set wireless.@wifi-iface[$i].ssid=${shellQuote(WANT_SSID)}
+  i=$((i+1))
+done
+uci commit wireless
+wifi reload 2>/dev/null || true
+
+echo ">>> تركيب مزامنة اسم الشبكة مع السيرفر (كل 5 دقايق)..."
+cat > /usr/bin/hotspot-ssid-sync << 'SYNC_EOF'
+#!/bin/sh
+# بيجيب اسم الشبكة المطلوب من السيرفر ويطبقه على كل الواجهات لو اتغير
+SRV="${IP}"
+DEV="${DEV_ID}"
+[ -z "$DEV" ] && exit 0
+WANT=$(wget -q -O - --no-check-certificate "https://$SRV/api/admin/config?deviceId=$DEV&type=ssid" 2>/dev/null | tr -d '[:space:]')
+[ -z "$WANT" ] && exit 0
+CHANGED=0
+i=0
+while uci get wireless.@wifi-iface[$i] >/dev/null 2>&1; do
+  CUR=$(uci get wireless.@wifi-iface[$i].ssid 2>/dev/null)
+  if [ "$CUR" != "$WANT" ]; then
+    uci set wireless.@wifi-iface[$i].ssid="$WANT"
+    CHANGED=1
+  fi
+  i=$((i+1))
+done
+if [ "$CHANGED" = "1" ]; then
+  uci commit wireless
+  wifi reload
+  echo "$(date): SSID => $WANT"
+fi
+SYNC_EOF
+chmod +x /usr/bin/hotspot-ssid-sync
+(crontab -l 2>/dev/null | grep -v hotspot-ssid-sync; echo "*/5 * * * * /usr/bin/hotspot-ssid-sync >/dev/null 2>&1") | crontab - 2>/dev/null || (echo "*/5 * * * * /usr/bin/hotspot-ssid-sync >/dev/null 2>&1" >> /etc/crontabs/root && /etc/init.d/cron restart 2>/dev/null || true)
 
 echo ">>> حفظ اوامر الادارة..."
 
@@ -208,14 +252,22 @@ cat > /usr/bin/hotspot-ssid << 'ENDOFFILE'
 #!/bin/sh
 NEW="$1"
 if [ -z "$NEW" ]; then
-    echo "الـ SSID الحالي: $(uci get wireless.@wifi-iface[0].ssid 2>/dev/null || echo unknown)"
+    i=0
+    while uci get wireless.@wifi-iface[$i] >/dev/null 2>&1; do
+        echo "SSID[$i]: $(uci get wireless.@wifi-iface[$i].ssid 2>/dev/null || echo unknown)"
+        i=$((i+1))
+    done
     echo "الاستخدام: hotspot-ssid 'اسم جديد'"
     exit 0
 fi
-uci set wireless.@wifi-iface[0].ssid="$NEW"
+i=0
+while uci get wireless.@wifi-iface[$i] >/dev/null 2>&1; do
+    uci set wireless.@wifi-iface[$i].ssid="$NEW"
+    i=$((i+1))
+done
 uci commit wireless
 wifi reload
-echo "تم تغيير SSID => $NEW"
+echo "تم تغيير كل الشبكات => $NEW"
 ENDOFFILE
 chmod +x /usr/bin/hotspot-ssid
 
@@ -308,6 +360,12 @@ export async function GET(req: NextRequest) {
     const device = await prisma.device.findUnique({ where: { id: deviceId } })
     if (!device)
       return NextResponse.json({ error: 'الجهاز غير موجود' }, { status: 404 })
+
+    if (type === 'ssid') {
+      return new NextResponse(device.wifiSSID || '', {
+        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+      })
+    }
 
     if (type === 'script') {
       const text = buildScript(device, serverIp, serverPort)

@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>كافيه ليالينا - بوابة الإنترنت</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;700;900&display=swap');
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{min-height:100vh;display:flex;align-items:center;justify-content:center;background:radial-gradient(ellipse at 50% 0%,#241442 0%,#140b28 45%,#0a0618 100%);font-family:Cairo,Tahoma,Arial,sans-serif;direction:rtl;padding:20px}
+  .stars{position:fixed;inset:0;pointer-events:none;background-image:radial-gradient(1px 1px at 20% 30%,rgba(255,255,255,.35) 50%,transparent 51%),radial-gradient(1px 1px at 70% 15%,rgba(255,255,255,.3) 50%,transparent 51%),radial-gradient(1.5px 1.5px at 85% 45%,rgba(255,255,255,.25) 50%,transparent 51%),radial-gradient(1px 1px at 35% 65%,rgba(255,255,255,.3) 50%,transparent 51%),radial-gradient(1px 1px at 10% 80%,rgba(255,255,255,.25) 50%,transparent 51%),radial-gradient(1.5px 1.5px at 60% 85%,rgba(255,255,255,.2) 50%,transparent 51%)}
+  .card{width:100%;max-width:400px;background:linear-gradient(160deg,#1b1136 0%,#150d2c 100%);border:1px solid #3d2a6b;border-radius:22px;padding:34px 26px;box-shadow:0 20px 60px rgba(0,0,0,.6),0 0 50px rgba(157,123,255,.12);position:relative;z-index:1}
+  .logo{width:76px;height:76px;border-radius:22px;background:linear-gradient(135deg,#9D7BFF,#5B3FB8);display:flex;align-items:center;justify-content:center;font-size:38px;margin:0 auto 14px;box-shadow:0 0 45px rgba(157,123,255,.45);text-align:center;line-height:76px}
+  h1{font-size:24px;font-weight:900;color:#E7DCFF;text-align:center;margin-bottom:4px;letter-spacing:.5px}
+  .sub{font-size:13px;color:#9d8fc4;text-align:center;margin-bottom:28px}
+  label{display:block;font-size:12px;color:#9d8fc4;font-weight:600;margin-bottom:8px}
+  input{width:100%;padding:14px 16px;background:#0e0824;border:1px solid #3d2a6b;border-radius:12px;color:#F2EBFF;font-size:18px;font-family:monospace;letter-spacing:3px;text-align:center;outline:none;transition:border-color .2s}
+  input:focus{border-color:#9D7BFF;box-shadow:0 0 0 3px rgba(157,123,255,.18)}
+  .bar{height:4px;background:#2a1d52;border-radius:2px;margin-top:8px;overflow:hidden}
+  .bar-fill{height:100%;background:#C9A227;border-radius:2px;width:0;transition:width .2s}
+  .error{margin-top:12px;padding:10px 14px;background:rgba(255,68,68,.08);border:1px solid rgba(255,68,68,.2);border-radius:10px;color:#FF6B6B;font-size:13px;text-align:center;display:none}
+  .btn{width:100%;margin-top:18px;padding:14px;background:linear-gradient(135deg,#C9A227,#E8C558);border:none;border-radius:12px;color:#1a1033;font-size:16px;font-weight:800;font-family:Cairo,Tahoma,Arial,sans-serif;cursor:pointer;transition:opacity .2s;box-shadow:0 6px 20px rgba(201,162,39,.3)}
+  .btn:disabled{background:#2a1d52;color:#6f5fa0;cursor:not-allowed;box-shadow:none}
+  .spinner{display:inline-block;width:16px;height:16px;border:2px solid #6f5fa0;border-top-color:#E8C558;border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-left:8px}
+  .tip{margin-top:20px;padding:12px 14px;background:#0e0824;border-radius:10px;border:1px solid #2a1d52;font-size:12px;color:#9d8fc4;text-align:center;line-height:1.9}
+  .success-box{text-align:center;padding:16px 0;display:none}
+  .success-icon{font-size:56px;margin-bottom:14px}
+  .success-title{font-size:22px;font-weight:900;color:#7DE8A8;margin-bottom:6px}
+  .success-sub{font-size:14px;color:#9d8fc4;margin-bottom:16px}
+  .success-wifi{background:rgba(125,232,168,.08);border:1px solid rgba(125,232,168,.25);border-radius:10px;padding:10px 16px;font-size:13px;color:#7DE8A8}
+  .progress{width:100%;height:4px;background:#2a1d52;border-radius:2px;overflow:hidden;margin-top:16px}
+  .progress-fill{height:100%;background:linear-gradient(90deg,#7DE8A8,#C9A227);border-radius:2px;animation:progress 3s linear forwards}
+  .wifi-badge{position:fixed;top:12px;right:12px;display:flex;align-items:center;gap:6px;background:rgba(20,11,40,.85);backdrop-filter:blur(8px);border:1px solid #3d2a6b;border-radius:999px;padding:5px 12px;font-size:12px;color:#B9A8E8;font-family:monospace;z-index:2}
+  .dot{color:#7DE8A8;font-size:10px;animation:pulse 2s infinite}
+  .footer{margin-top:18px;text-align:center;font-size:11px;color:#6f5fa0}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+  @keyframes progress{from{width:0}to{width:100%}}
+</style>
+</head>
+<body>
+<div class="stars"></div>
+<div class="wifi-badge"><span class="dot">●</span>Layalina-WiFi</div>
+
+<div class="card">
+  <div class="logo">🌙</div>
+  <h1>★ كافيه ليالينا ★</h1>
+  <p class="sub">أهلاً بيك في كافيه ليالينا — أدخل كود الاشتراك للاتصال بالإنترنت</p>
+
+  <div id="form-box">
+    <label>كود الاشتراك</label>
+    <input id="code" type="text" placeholder="XXXX-XXXX" dir="ltr" autocomplete="off" autocorrect="off" spellcheck="false" oninput="onInput(this)" onkeydown="if(event.key==='Enter')doLogin()">
+    <div class="bar"><div class="bar-fill" id="bar"></div></div>
+    <div class="error" id="err"></div>
+    <button class="btn" id="btn" onclick="doLogin()" disabled>🔑 تفعيل الكود</button>
+    <div class="tip">💡 احصل على كود الاشتراك من الكافيه<br>كروت ليالينا المميزة تجدها عند الكاشير</div>
+  </div>
+
+  <div class="success-box" id="success-box">
+    <div class="success-icon">✅</div>
+    <div class="success-title">مبروك - تم التفعيل!</div>
+    <div class="success-sub">تمام... بتحوّلك للإنترنت</div>
+    <div class="success-wifi">📶 متصل بـ Layalina-WiFi</div>
+    <div class="progress"><div class="progress-fill"></div></div>
+  </div>
+
+  <div class="footer">© كافيه ليالينا</div>
+</div>
+
+<script>
+var params=(function(){var p=new URLSearchParams(location.search);return{gw_address:p.get('gw_address')||'',gw_port:p.get('gw_port')||'2060',mac:p.get('mac')||'',ip:p.get('ip')||'',gw_id:p.get('gw_id')||'',url:p.get('url')||''};})();
+function formatCode(v){var c=v.toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,20);return c.match(/.{1,4}/g)?.join('-')||c;}
+function onInput(el){var f=formatCode(el.value);el.value=f;var r=f.replace(/-/g,'');var pct=Math.min(100,(r.length/8)*100);var bar=document.getElementById('bar');bar.style.width=pct+'%';bar.style.background=r.length>=6?'#C9A227':'#9D7BFF';document.getElementById('btn').disabled=r.length<6;document.getElementById('err').style.display='none';}
+function showError(msg){var el=document.getElementById('err');el.innerHTML='⚠ '+msg;el.style.display='block';}
+async function doLogin(){
+  var codeEl=document.getElementById('code');
+  var raw=codeEl.value.replace(/-/g,'');
+  if(raw.length<6){showError('الحد الأدنى 6 أحرف');return;}
+  var btn=document.getElementById('btn');
+  btn.disabled=true;
+  btn.innerHTML='<span class="spinner"></span> جاري التحقق...';
+  try{
+    var res=await fetch('/api/portal/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:codeEl.value,mac:params.mac,ip:params.ip,gatewayId:params.gw_id,hostname:params.url})});
+    var data=await res.json();
+    if(data.success){
+      document.getElementById('form-box').style.display='none';
+      document.getElementById('success-box').style.display='block';
+      var token=data.token;
+      var gw=params.gw_address;
+      var port=params.gw_port||'2060';
+      if(gw){setTimeout(function(){window.location.replace('http://'+gw+':'+port+'/wifidog/auth?token='+token);},500);}
+      else{setTimeout(function(){window.location.href='/session?token='+token;},500);}
+    }else{
+      showError(data.message||'الكود غير صحيح أو منتهي الصلاحية');
+      btn.disabled=false;btn.innerHTML='🔑 تفعيل الكود';
+    }
+  }catch(e){
+    showError('خطأ في الاتصال بالسيرفر');
+    btn.disabled=false;btn.innerHTML='🔑 تفعيل الكود';
+  }
+}
+</script>
+</body>
+</html>
