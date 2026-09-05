@@ -2,9 +2,9 @@
 import { useState, useEffect, useCallback } from 'react'
 
 type SA = { id: string; username: string; email: string }
-type Admin = { id:string; name:string; username:string; email:string; phone?:string; maxDevices:number; maxVouchersTotal:number; totalVouchersGenerated:number; isActive:boolean; createdAt:string; canCreateUnlimited:boolean; canCreateNFC:boolean; canCreateQR:boolean; canRenewVouchers:boolean; _count?:{devices:number;vouchers:number} }
+type Admin = { id:string; name:string; username:string; email:string; phone?:string; maxDevices:number; maxVouchersTotal:number; totalVouchersGenerated:number; isActive:boolean; createdAt:string; canCreateUnlimited:boolean; canCreateNFC:boolean; canCreateQR:boolean; canRenewVouchers:boolean; _count?:{devices:number;vouchers:number}; __srv?:string; superAdminId?:string }
 type StatsData = { summary:{totalActiveSessions:number;totalActiveDevices:number;totalDevices:number;totalDataInMB:number;totalDataOutMB:number}; activeSessions:any[]; devices:any[]; admins:any[]; consumption:{deviceId:string;deviceName:string;totalInMB:number;totalOutMB:number;totalMB:number;sessions:number;timeMin:number}[] }
-type VoucherItem = { id:string; code:string; status:string; packageType:string; dataLimitMB:number|null; timeLimitMin:number|null; dataUsedMB:number; createdAt:string; hotspotAdmin?:{name:string}; device?:{name:string} }
+type VoucherItem = { id:string; code:string; status:string; packageType:string; dataLimitMB:number|null; timeLimitMin:number|null; dataUsedMB:number; createdAt:string; hotspotAdmin?:{name:string}; device?:{name:string}; __srv?:string }
 
 const S = {
   card:  { background:'#0C1420', border:'1px solid #1C2A40', borderRadius:14, padding:18 } as React.CSSProperties,
@@ -18,8 +18,57 @@ const S = {
 const fmtMB   = (mb:number)  => mb>=1024?(mb/1024).toFixed(2)+' GB':mb.toFixed(1)+' MB'
 const fmtTime = (min:number) => min>=60?Math.floor(min/60)+'س '+(min%60?Math.round(min%60)+'د':''):Math.round(min)+'د'
 
+// ═══ التحكم الموحد: كل السيرفرات من لوحة واحدة — بدون تغيير أي حسابات ═══
+const SERVERS: Record<string,{key:string;label:string;url:string;color:string}> = {
+  gamma: { key:'gamma', label:'الرئيسي',        url:'https://hotspot-system-gamma.vercel.app',  color:'#00D4FF' },
+  kappa: { key:'kappa', label:'سيرفر الشعلة',   url:'https://hotspot-system-kappa.vercel.app',  color:'#fb923c' },
+  dun:   { key:'dun',   label:'سيرفر السرايا',  url:'https://hotspot-system-dun.vercel.app',    color:'#00E676' },
+  seven: { key:'seven', label:'سيرفر البرنس',   url:'https://hotspot-system-seven.vercel.app',  color:'#818cf8' },
+}
+const SERVER_KEYS = Object.keys(SERVERS)
+
+// نداء موحد: gamma مباشر، وأي سيرفر تاني عن طريق البروكسي (server-side)
+async function rpc(srv:string|undefined, path:string, opts?:{method?:string;body?:any}):Promise<any> {
+  const method = opts?.method || 'GET'
+  if (!srv || srv === 'gamma') {
+    const r = await fetch(path, { method, headers: opts?.body !== undefined ? {'Content-Type':'application/json'} : undefined, body: opts?.body !== undefined ? JSON.stringify(opts.body) : undefined })
+    return r.json().catch(()=>({}))
+  }
+  const r = await fetch('/api/superadmin/remote', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ server:srv, path, method, body: opts?.body }) })
+  const d = await r.json().catch(()=>({}))
+  if (d && d.__proxy) return d.data            // فك غلاف البروكسي
+  return d
+}
+
+// نداء نفس المسار على كل السيرفرات بالتوازي — النتيجة: { gamma:..., kappa:... }
+async function rpcAll(path:string, opts?:{method?:string;body?:any}):Promise<Record<string,any>> {
+  const out: Record<string,any> = {}
+  await Promise.all(SERVER_KEYS.map(async k=>{ try{ out[k] = await rpc(k, path, opts) }catch{ out[k] = null } }))
+  return out
+}
+
+// كل الأدمنز من السيرفرات الأربعة + وسم السيرفر على كل أدمن
+async function loadAllAdmins(): Promise<Admin[]> {
+  try {
+    const r = await fetch('/api/superadmin/aggregate')
+    if (r.ok) {
+      const d = await r.json()
+      if (Array.isArray(d.servers))
+        return d.servers.filter((s:any)=>s.ok).flatMap((s:any)=>(s.admins||[]).map((a:any)=>({...a, __srv:s.key})))
+    }
+  } catch {}
+  const local = await rpc('gamma','/api/superadmin/admins')
+  return (Array.isArray(local)?local:[]).map((a:any)=>({...a,__srv:'gamma'}))
+}
+
+// شارة اسم السيرفر اللي الكافيه عليه
+const SrvBadge = ({srv}:{srv?:string}) => {
+  const s = SERVERS[srv||'gamma'] || SERVERS.gamma
+  return <span style={{...S.tag(true,s.color),fontSize:9}} title={'الكافيه على سيرفر: '+s.url}>📍 {s.label}</span>
+}
+
 const TABS = [
-  { key:'allservers',  icon:'🌍', label:'كل السيرفرات' },
   { key:'admins',      icon:'👤', label:'الأدمنز' },
   { key:'cafestats',   icon:'📊', label:'إحصائيات الكافيهات' },
   { key:'monitor',     icon:'📡', label:'المراقبة' },
@@ -68,7 +117,7 @@ function LoginScreen({ onLogin }:{ onLogin:(sa:SA)=>void }) {
 
 function AdminsTab({ sa }:{ sa:SA }) {
   const [admins,setAdmins]=useState<Admin[]>([]); const [view,setView]=useState<'list'|'create'|'edit'>('list'); const [editing,setEditing]=useState<Admin|null>(null); const [msg,setMsg]=useState('')
-  const [form,setForm]=useState({name:'',username:'',email:'',phone:'',password:'',maxDevices:50,maxVouchersTotal:1000000,canCreateUnlimited:false,canCreateNFC:false,canCreateQR:false,canRenewVouchers:true})
+  const [form,setForm]=useState({name:'',username:'',email:'',phone:'',password:'',maxDevices:50,maxVouchersTotal:1000000,canCreateUnlimited:false,canCreateNFC:false,canCreateQR:false,canRenewVouchers:true,srv:'gamma'} as any)
   const [editData,setEditData]=useState({maxDevices:50,maxVouchersTotal:1000000,isActive:true,canCreateUnlimited:false,canCreateNFC:false,canCreateQR:false,canRenewVouchers:true})
 
   const [expandedAdmin,setExpandedAdmin]=useState<string|null>(null)
@@ -76,43 +125,42 @@ function AdminsTab({ sa }:{ sa:SA }) {
   const [toggling,setToggling]=useState<string|null>(null)
   const [togglingDev,setTogglingDev]=useState<string|null>(null)
 
-  const load=useCallback(async()=>{const r=await fetch('/api/superadmin/admins');const d=await r.json();if(Array.isArray(d)) setAdmins(d)},[])
+  const load=useCallback(async()=>{setAdmins(await loadAllAdmins())},[])
   useEffect(()=>{load()},[load])
+
+  const adminById=(id:string)=>admins.find(a=>a.id===id)
 
   const loadDevices=async(adminId:string)=>{
     setExpandedAdmin(prev=>prev===adminId?null:adminId)
     if(!adminDevices[adminId]){
-      const r=await fetch('/api/superadmin/admin-devices?adminId='+adminId)
-      const d=await r.json()
+      const d=await rpc(adminById(adminId)?.__srv,'/api/superadmin/admin-devices?adminId='+adminId)
       if(Array.isArray(d)) setAdminDevices(prev=>({...prev,[adminId]:d}))
     }
   }
 
   const toggleAdmin=async(a:Admin)=>{
     setToggling(a.id)
-    await fetch('/api/superadmin/admins',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:a.id,isActive:!a.isActive,maxDevices:a.maxDevices,maxVouchersTotal:a.maxVouchersTotal,canCreateUnlimited:a.canCreateUnlimited,canCreateNFC:a.canCreateNFC,canCreateQR:a.canCreateQR,canRenewVouchers:a.canRenewVouchers})})
+    await rpc(a.__srv,'/api/superadmin/admins',{method:'PUT',body:{id:a.id,isActive:!a.isActive,maxDevices:a.maxDevices,maxVouchersTotal:a.maxVouchersTotal,canCreateUnlimited:a.canCreateUnlimited,canCreateNFC:a.canCreateNFC,canCreateQR:a.canCreateQR,canRenewVouchers:a.canRenewVouchers}})
     setToggling(null)
     load()
   }
 
   const toggleDevice=async(adminId:string,deviceId:string,isActive:boolean)=>{
     setTogglingDev(deviceId)
-    await fetch('/api/superadmin/admin-devices',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({deviceId,isActive:!isActive})})
-    const r=await fetch('/api/superadmin/admin-devices?adminId='+adminId)
-    const d=await r.json()
+    await rpc(adminById(adminId)?.__srv,'/api/superadmin/admin-devices',{method:'PUT',body:JSON.stringify({deviceId,isActive:!isActive})})
+    const d=await rpc(adminById(adminId)?.__srv,'/api/superadmin/admin-devices?adminId='+adminId)
     if(Array.isArray(d)) setAdminDevices(prev=>({...prev,[adminId]:d}))
     setTogglingDev(null)
   }
 
   const createAdmin=async()=>{
-    const r=await fetch('/api/superadmin/admins',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...form,superAdminId:sa.id})})
-    const d=await r.json()
-    if(d.success){setMsg('✅ تم إنشاء الأدمن');load();setView('list')} else setMsg('❌ '+d.error)
+    const { srv, ...rest } = form as any
+    const d=await rpc(srv,'/api/superadmin/admins',{method:'POST',body:{...rest,superAdminId:'__SERVER_SA__'}})
+    if(d.success){setMsg(`✅ تم إنشاء الأدمن على ${SERVERS[srv]?.label||'السيرفر الرئيسي'}`);load();setView('list')} else setMsg('❌ '+d.error)
   }
   const updateAdmin=async()=>{
     if(!editing) return
-    const r=await fetch('/api/superadmin/admins',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:editing.id,...editData})})
-    const d=await r.json()
+    const d=await rpc(editing.__srv,'/api/superadmin/admins',{method:'PUT',body:{id:editing.id,...editData}})
     if(d.success){setMsg('✅ تم التحديث');load();setView('list')} else setMsg('❌ '+(d.error||'خطأ'))
   }
 
@@ -148,6 +196,7 @@ function AdminsTab({ sa }:{ sa:SA }) {
             {[{k:'name',l:'الاسم',p:'أحمد محمد'},{k:'username',l:'يوزرنيم',p:'ahmed_cafe'},{k:'email',l:'إيميل',p:'a@cafe.com',t:'email'},{k:'phone',l:'موبايل',p:'010xxxxxxxx'},{k:'password',l:'كلمة المرور',p:'••••',t:'password'}].map(f=>(<div key={f.k}><label style={S.label}>{f.l}</label><input style={S.input} type={(f as any).t||'text'} placeholder={f.p} value={(form as any)[f.k]} onChange={e=>setForm({...form,[f.k]:e.target.value})}/></div>))}
             <div><label style={S.label}>أقصى أجهزة</label><input style={S.input} type="number" min={1} value={form.maxDevices} onChange={e=>setForm({...form,maxDevices:+e.target.value})}/></div>
             <div><label style={S.label}>أقصى كروت</label><input style={S.input} type="number" min={1} value={form.maxVouchersTotal} onChange={e=>setForm({...form,maxVouchersTotal:+e.target.value})}/></div>
+            <div style={{gridColumn:'span 2'}}><label style={S.label}>🖥️ السيرفر اللي الكافيه هيشتغل عليه</label><select style={S.input} value={form.srv} onChange={e=>setForm({...form,srv:e.target.value})}>{SERVER_KEYS.map(k=><option key={k} value={k}>{SERVERS[k].label}</option>)}</select><div style={{fontSize:10,color:'#354E6A',marginTop:4}}>كل السيرفرات مربوطة باللوحة دي — الكافيه هيشتغل على سيرفه والتحكم من هنا</div></div>
           </div>
           <div style={{marginBottom:14}}><label style={{...S.label,fontSize:12,marginBottom:10}}>🔑 الصلاحيات</label><PermGrid data={form} onChange={(k,v)=>setForm({...form,[k]:v})}/></div>
           <div style={{display:'flex',gap:8}}><button style={S.btn()} onClick={createAdmin}>💾 إنشاء</button><button style={{...S.btn('#1C2A40','#6B8CAE')}} onClick={()=>setView('list')}>إلغاء</button></div>
@@ -181,6 +230,7 @@ function AdminsTab({ sa }:{ sa:SA }) {
                 <div style={{display:'flex',alignItems:'center',gap:7}}>
                   <div style={{width:8,height:8,borderRadius:'50%',flexShrink:0,background:a.isActive?'#00E676':'#FF4444',boxShadow:a.isActive?'0 0 5px rgba(0,230,118,0.5)':'none'}}/>
                   <div style={{fontSize:14,fontWeight:700,color:a.isActive?'#E2F0FB':'#6B8CAE'}}>{a.name}</div>
+                  <SrvBadge srv={a.__srv}/>
                 </div>
                 <div style={{fontSize:10,color:'#354E6A',marginTop:2}}>@{a.username} · {a.email}</div>
               </div>
@@ -245,9 +295,19 @@ function CafeStatsTab() {
 
   const load = useCallback(async () => {
     setLoading(true)
-    const r = await fetch('/api/superadmin/stats')
-    const d = await r.json()
-    if (!d.error) setData(d)
+    const bySrv = await rpcAll('/api/superadmin/stats')
+    const srvs = SERVER_KEYS.map(k=>bySrv[k]).filter((d:any)=>d && !d.error)
+    setData({
+      summary:{
+        totalActiveSessions:srvs.reduce((s:number,d:any)=>s+(d.summary?.totalActiveSessions||0),0),
+        totalActiveDevices: srvs.reduce((s:number,d:any)=>s+(d.summary?.totalActiveDevices||0),0),
+        totalDevices:       srvs.reduce((s:number,d:any)=>s+(d.summary?.totalDevices||0),0),
+        totalDataInMB:      srvs.reduce((s:number,d:any)=>s+(d.summary?.totalDataInMB||0),0),
+        totalDataOutMB:     srvs.reduce((s:number,d:any)=>s+(d.summary?.totalDataOutMB||0),0),
+      },
+      todaySessions:srvs.reduce((s:number,d:any)=>s+(d.todaySessions||0),0),
+      cafeStats:SERVER_KEYS.flatMap(k=>(((bySrv[k]&&!bySrv[k].error)?bySrv[k].cafeStats:[])||[]).map((c:any)=>({...c,__srv:k}))),
+    } as any)
     setLoading(false)
   }, [])
 
@@ -294,7 +354,10 @@ function CafeStatsTab() {
                 <div style={{display:'flex',alignItems:'center',gap:10}}>
                   <div style={{width:36,height:36,borderRadius:10,background:`${statusColor}18`,border:`1px solid ${statusColor}40`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:18}}>☕</div>
                   <div>
-                    <div style={{fontSize:13,fontWeight:700,color:'#E2F0FB'}}>{cafe.name}</div>
+                    <div style={{display:'flex',alignItems:'center',gap:6}}>
+                      <div style={{fontSize:13,fontWeight:700,color:'#E2F0FB'}}>{cafe.name}</div>
+                      <SrvBadge srv={(cafe as any).__srv}/>
+                    </div>
                     <div style={{fontSize:10,color:'#6B8CAE'}}>@{cafe.username} · {cafe.totalDevices} جهاز</div>
                   </div>
                 </div>
@@ -348,19 +411,35 @@ function CafeStatsTab() {
 function MonitorTab() {
   const [stats,setStats]=useState<StatsData|null>(null); const [loading,setLoading]=useState(true); const [selAdmin,setSelAdmin]=useState('')
   const [devStatus,setDevStatus]=useState<Record<string,{online:boolean;reason:string}>>({}) ; const [statusLoading,setStatusLoading]=useState(false)
-  const load=useCallback(async()=>{setLoading(true);const r=await fetch(`/api/superadmin/stats${selAdmin?`?adminId=${selAdmin}`:''}`);const d=await r.json();if(!d.error) setStats(d);setLoading(false)},[selAdmin])
+  const load=useCallback(async()=>{
+    setLoading(true)
+    const q=selAdmin?`?adminId=${selAdmin}`:''
+    const bySrv=await rpcAll(`/api/superadmin/stats${q}`)
+    const srvs=SERVER_KEYS.map(k=>({k,d:bySrv[k]})).filter((x:any)=>x.d&&!x.d.error)
+    setStats({
+      summary:{
+        totalActiveSessions:srvs.reduce((s:number,x:any)=>s+(x.d.summary?.totalActiveSessions||0),0),
+        totalActiveDevices: srvs.reduce((s:number,x:any)=>s+(x.d.summary?.totalActiveDevices||0),0),
+        totalDevices:       srvs.reduce((s:number,x:any)=>s+(x.d.summary?.totalDevices||0),0),
+        totalDataInMB:      srvs.reduce((s:number,x:any)=>s+(x.d.summary?.totalDataInMB||0),0),
+        totalDataOutMB:     srvs.reduce((s:number,x:any)=>s+(x.d.summary?.totalDataOutMB||0),0),
+      },
+      activeSessions:srvs.flatMap((x:any)=>(x.d.activeSessions||[]).map((y:any)=>({...y,__srv:x.k}))),
+      devices:srvs.flatMap((x:any)=>(x.d.devices||[]).map((y:any)=>({...y,__srv:x.k}))),
+      admins:srvs.flatMap((x:any)=>(x.d.admins||[]).map((y:any)=>({...y,__srv:x.k}))),
+      consumption:srvs.flatMap((x:any)=>(x.d.consumption||[]).map((y:any)=>({...y,__srv:x.k}))),
+    } as any)
+    setLoading(false)
+  },[selAdmin])
   useEffect(()=>{load()},[load])
 
   const checkAllDevices=async()=>{
     setStatusLoading(true)
     try{
-      const r=await fetch(`/api/superadmin/device-status${selAdmin?`?adminId=${selAdmin}`:''}`)
-      const d=await r.json()
-      if(d.devices){
-        const map:Record<string,{online:boolean;reason:string}>={}
-        d.devices.forEach((x:any)=>{map[x.deviceId]={online:x.online,reason:x.reason}})
-        setDevStatus(map)
-      }
+      const bySrv=await rpcAll(`/api/superadmin/device-status${selAdmin?`?adminId=${selAdmin}`:''}`)
+      const map:Record<string,{online:boolean;reason:string}>={}
+      SERVER_KEYS.forEach(k=>{ const d=bySrv[k]; if(d&&d.devices) d.devices.forEach((x:any)=>{map[x.deviceId]={online:x.online,reason:x.reason}}) })
+      setDevStatus(map)
     }catch{}
     setStatusLoading(false)
   }
@@ -372,7 +451,7 @@ function MonitorTab() {
         <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
           <select style={{...S.input,flex:1,minWidth:160,padding:'7px 11px',fontSize:12}} value={selAdmin} onChange={e=>setSelAdmin(e.target.value)}>
             <option value="">كل الأدمنز</option>
-            {stats.admins.map((a:any)=><option key={a.id} value={a.id}>{a.name}</option>)}
+            {stats.admins.map((a:any)=><option key={a.id} value={a.id}>{a.name} — {SERVERS[a.__srv||'gamma']?.label}</option>)}
           </select>
           <button onClick={load} style={{...S.btn('#111B2D','#6B8CAE'),border:'1px solid #1C2A40',padding:'7px 14px',fontSize:12}}>🔄</button>
           <button onClick={checkAllDevices} disabled={statusLoading} style={{...S.btn(statusLoading?'#1C2A40':'rgba(0,230,118,0.12)',statusLoading?'#6B8CAE':'#00E676'),border:'1px solid rgba(0,230,118,0.25)',padding:'7px 14px',fontSize:12,opacity:statusLoading?0.7:1}}>{statusLoading?'⏳ فحص...':'📡 فحص الاتصال'}</button>
@@ -391,6 +470,7 @@ function MonitorTab() {
               <div key={d.id} style={{background:'#070B12',border:'1px solid #1C2A40',borderRadius:9,padding:'9px 11px'}}>
                 <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:5}}>
                   <span style={{fontSize:12,fontWeight:700,color:d.isActive?'#E2F0FB':'#354E6A'}}>{d.name}</span>
+                  <SrvBadge srv={d.__srv}/>
                   <div style={{display:'flex',gap:4,alignItems:'center',flexWrap:'wrap'}}>
                     <span style={S.tag(d.isActive,'#00E676')}>{d.isActive?'● نشط DB':'○ DB'}</span>
                     {devStatus[d.id]&&(
@@ -430,6 +510,7 @@ function MonitorTab() {
               <div key={a.id} style={{background:'#070B12',border:'1px solid #1C2A40',borderRadius:9,padding:'9px 11px'}}>
                 <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
                   <span style={{fontSize:12,fontWeight:700,color:'#E2F0FB'}}>{a.name}</span>
+                  <SrvBadge srv={a.__srv}/>
                   <span style={{fontSize:10,color:a.activeSessionsCount>0?'#00E676':'#6B8CAE'}}>📡 {a.activeSessionsCount}</span>
                 </div>
                 <div style={{display:'flex',gap:8,fontSize:10,flexWrap:'wrap'}}>
@@ -451,7 +532,7 @@ function MonitorTab() {
               <tbody>
                 {stats.consumption.map((r,i)=>(
                   <tr key={r.deviceId} style={{borderBottom:'1px solid #070B12',background:i%2===0?'transparent':'rgba(255,255,255,0.01)'}}>
-                    <td style={{padding:'7px 9px',color:'#E2F0FB',fontWeight:600}}>{r.deviceName}</td>
+                    <td style={{padding:'7px 9px',color:'#E2F0FB',fontWeight:600}}>{r.deviceName} <span style={{fontSize:9,color:'#354E6A',fontWeight:400}}>({SERVERS[(r as any).__srv||'gamma']?.label})</span></td>
                     <td style={{padding:'7px 9px',color:'#22d3ee'}}>⬇️ {fmtMB(r.totalInMB)}</td>
                     <td style={{padding:'7px 9px',color:'#4ade80'}}>⬆️ {fmtMB(r.totalOutMB)}</td>
                     <td style={{padding:'7px 9px',color:'#fb923c',fontWeight:700}}>{fmtMB(r.totalMB)}</td>
@@ -481,17 +562,26 @@ function VouchersTab() {
   const [vouchers,setVouchers]=useState<VoucherItem[]>([]); const [total,setTotal]=useState(0); const [loading,setLoading]=useState(false)
   const [msg,setMsg]=useState(''); const [selected,setSelected]=useState<Set<string>>(new Set()); const [confirm,setConfirm]=useState<null|{action:string;label:string}>(null)
 
-  useEffect(()=>{fetch('/api/superadmin/admins').then(r=>r.json()).then(d=>{if(Array.isArray(d)) setAdmins(d)})},[])
+  useEffect(()=>{loadAllAdmins().then(d=>setAdmins(d))},[])
   const loadVouchers=useCallback(async()=>{
     if(!selAdmin&&status!=='ALL'){setVouchers([]);return}
     setLoading(true)
     const params=new URLSearchParams({limit:'300'})
     if(selAdmin) params.set('adminId',selAdmin)
     if(status!=='ALL') params.set('status',status)
-    const r=await fetch(`/api/superadmin/vouchers?${params}`);const d=await r.json()
-    if(d.vouchers){setVouchers(d.vouchers);setTotal(d.total)}
+    if(selAdmin){
+      const srv=admins.find(a=>a.id===selAdmin)?.__srv
+      const d=await rpc(srv,`/api/superadmin/vouchers?${params}`)
+      if(d&&d.vouchers){setVouchers(d.vouchers.map((v:any)=>({...v,__srv:srv})));setTotal(d.total)} else {setVouchers([]);setTotal(0)}
+    } else {
+      const bySrv=await rpcAll(`/api/superadmin/vouchers?${params}`)
+      const all=SERVER_KEYS.flatMap(k=>(((bySrv[k]&&!bySrv[k].error)?bySrv[k].vouchers:[])||[]).map((v:any)=>({...v,__srv:k})))
+        .sort((a:any,b:any)=>new Date(b.createdAt).getTime()-new Date(a.createdAt).getTime())
+      setVouchers(all.slice(0,300))
+      setTotal(SERVER_KEYS.reduce((s,k)=>s+((bySrv[k]&&!bySrv[k].error)?bySrv[k].total||0:0),0))
+    }
     setSelected(new Set());setLoading(false)
-  },[selAdmin,status])
+  },[selAdmin,status,admins])
   useEffect(()=>{if(selAdmin) loadVouchers()},[selAdmin,status])
 
   const toggleSel=(id:string)=>setSelected(p=>{const n=new Set(p);n.has(id)?n.delete(id):n.add(id);return n})
@@ -502,14 +592,20 @@ function VouchersTab() {
     if(!confirm) return; setLoading(true); setMsg('')
     try{
       const ids=selected.size>0?[...selected]:undefined
-      let res:Response
-      if(confirm.action==='delete'){
-        res=await fetch('/api/superadmin/vouchers',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids,adminId:selAdmin||undefined,status:ids?undefined:status})})
+      const srv=selAdmin?admins.find(a=>a.id===selAdmin)?.__srv:undefined
+      const body= confirm.action==='delete'
+        ? {ids,adminId:selAdmin||undefined,status:ids?undefined:status}
+        : {ids,adminId:selAdmin||undefined,fromStatus:ids?undefined:status,toStatus:'EXPIRED'}
+      let okCount=0
+      if(selAdmin){
+        const d=await rpc(srv,'/api/superadmin/vouchers',{method:confirm.action==='delete'?'DELETE':'PATCH',body})
+        if(d.success) okCount=d.deleted||d.updated||0
+        else { setMsg('❌ '+(d.error||'خطأ')); setConfirm(null); setLoading(false); return }
       } else {
-        res=await fetch('/api/superadmin/vouchers',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids,adminId:selAdmin||undefined,fromStatus:ids?undefined:status,toStatus:'EXPIRED'})})
+        const bySrv=await rpcAll('/api/superadmin/vouchers',{method:confirm.action==='delete'?'DELETE':'PATCH',body})
+        okCount=SERVER_KEYS.reduce((s,k)=>s+((bySrv[k]&&(bySrv[k].deleted||bySrv[k].updated))||0),0)
       }
-      const d=await res.json()
-      if(d.success){setMsg(`✅ تم — ${d.deleted||d.updated||0} كارت`);loadVouchers()} else setMsg('❌ '+d.error)
+      setMsg(`✅ تم — ${okCount} كارت`);loadVouchers()
     }catch(e:any){setMsg('❌ '+e.message)}
     setConfirm(null);setLoading(false)
   }
@@ -534,7 +630,7 @@ function VouchersTab() {
       )}
       <div style={{...S.card,marginBottom:12,padding:12}}>
         <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'flex-end'}}>
-          <div style={{flex:'1 1 160px'}}><label style={S.label}>الأدمن</label><select style={{...S.input,padding:'8px 11px',fontSize:12}} value={selAdmin} onChange={e=>setSelAdmin(e.target.value)}><option value="">كل الأدمنز</option>{admins.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select></div>
+          <div style={{flex:'1 1 160px'}}><label style={S.label}>الأدمن (كل السيرفرات)</label><select style={{...S.input,padding:'8px 11px',fontSize:12}} value={selAdmin} onChange={e=>setSelAdmin(e.target.value)}><option value="">كل الأدمنز على كل السيرفرات</option>{admins.map(a=><option key={a.id} value={a.id}>{a.name} · {SERVERS[a.__srv||'gamma']?.label}</option>)}</select></div>
           <div style={{flex:'1 1 130px'}}><label style={S.label}>الحالة</label><select style={{...S.input,padding:'8px 11px',fontSize:12}} value={status} onChange={e=>setStatus(e.target.value)}><option value="USED">مستخدمة</option><option value="UNUSED">غير مستخدمة</option><option value="ACTIVE">نشطة</option><option value="DEPLETED">نفدت</option><option value="EXPIRED">انتهى</option><option value="ALL">الكل</option></select></div>
           <button onClick={loadVouchers} style={{...S.btn('#111B2D','#6B8CAE'),border:'1px solid #1C2A40',padding:'8px 14px',fontSize:12}}>🔍 بحث</button>
         </div>
@@ -546,8 +642,10 @@ function VouchersTab() {
           <button onClick={toggleAll} style={{...S.btn('#111B2D','#6B8CAE'),border:'1px solid #1C2A40',fontSize:11,padding:'5px 10px'}}>{selAll?'إلغاء الكل':'تحديد الكل'}</button>
           <div style={{flex:1}}/>
           <button onClick={()=>{
-            const ids = selected.size>0 ? [...selected] : vouchers.map(v=>v.id)
-            window.open(`/print?ids=${ids.join(',')}&sa=1`, '_blank')
+            const rows=selected.size>0?vouchers.filter(v=>selected.has(v.id)):vouchers
+            const bySrv:Record<string,string[]>={}
+            rows.forEach(v=>{const k=(v as any).__srv||'gamma';(bySrv[k]=bySrv[k]||[]).push(v.id)})
+            Object.entries(bySrv).forEach(([k,ids])=>window.open(`${SERVERS[k]?.url||''}/print?ids=${ids.join(',')}&sa=1`, '_blank'))
           }} style={{...S.btn('rgba(0,212,255,0.12)','#00D4FF'),border:'1px solid rgba(0,212,255,0.3)',fontSize:11,padding:'6px 12px'}}>🖨️ طباعة{selected.size>0?` (${selected.size})`:` (${vouchers.length})`}</button>
           <button onClick={()=>setConfirm({action:'disable',label:'⛔ تعطيل'})} style={{...S.btn('rgba(251,146,60,0.12)','#fb923c'),border:'1px solid rgba(251,146,60,0.3)',fontSize:11,padding:'6px 12px'}}>⛔ تعطيل{selected.size>0?` (${selected.size})`:''}</button>
           <button onClick={()=>setConfirm({action:'delete',label:'🗑️ حذف'})} style={{...S.btn('rgba(255,68,68,0.12)','#FF4444'),border:'1px solid rgba(255,68,68,0.3)',fontSize:11,padding:'6px 12px'}}>🗑️ حذف{selected.size>0?` (${selected.size})`:''}</button>
@@ -568,7 +666,7 @@ function VouchersTab() {
                     <td style={{padding:'6px 8px',fontFamily:'monospace',color:'#00D4FF',fontSize:10}}>{v.code}</td>
                     <td style={{padding:'6px 8px'}}><span style={{...S.tag(true,sColor[v.status]||'#6B8CAE')}}>{sLabel[v.status]||v.status}</span></td>
                     <td style={{padding:'6px 8px',color:'#6B8CAE'}}>{v.packageType==='BOTH'?'داتا+وقت':v.packageType==='DATA_ONLY'?'داتا':'وقت'}</td>
-                    <td style={{padding:'6px 8px',color:'#6B8CAE'}}>{v.hotspotAdmin?.name||'—'}</td>
+                    <td style={{padding:'6px 8px',color:'#6B8CAE'}}>{v.hotspotAdmin?.name||'—'} <SrvBadge srv={v.__srv}/></td>
                     <td style={{padding:'6px 8px',color:'#6B8CAE'}}>{v.device?.name||'—'}</td>
                   </tr>
                 ))}
@@ -585,11 +683,12 @@ function GenerateTab({ sa }:{ sa:SA }) {
   const [admins,setAdmins]=useState<Admin[]>([]); const [devices,setDevices]=useState<any[]>([]); const [msg,setMsg]=useState(''); const [loading,setLoading]=useState(false)
   const [gen,setGen]=useState({hotspotAdminId:'',deviceId:'',count:1,packageType:'BOTH',voucherType:'STANDARD',dataLimitMB:1024,timeLimitMin:60,speedLimitMbps:'',maxUsageCount:1,codeType:'mix',validityDays:'',isRenewable:false,codeLength:16})
 
-  useEffect(()=>{fetch('/api/superadmin/admins').then(r=>r.json()).then(d=>{if(Array.isArray(d)) setAdmins(d)})},[])
+  useEffect(()=>{loadAllAdmins().then(d=>setAdmins(d))},[])
   useEffect(()=>{
     if(!gen.hotspotAdminId){setDevices([]);setGen(g=>({...g,deviceId:''}));return}
-    fetch(`/api/admin/devices?adminId=${gen.hotspotAdminId}`).then(r=>r.json()).then(d=>{if(Array.isArray(d)) setDevices(d)})
-  },[gen.hotspotAdminId])
+    const srv=admins.find(a=>a.id===gen.hotspotAdminId)?.__srv
+    rpc(srv,`/api/admin/devices?adminId=${gen.hotspotAdminId}`).then(d=>{if(Array.isArray(d)) setDevices(d)})
+  },[gen.hotspotAdminId,admins])
 
   const isQRType=gen.voucherType==='QR'; const isUnlimited=gen.packageType==='UNLIMITED'
 
@@ -602,19 +701,21 @@ function GenerateTab({ sa }:{ sa:SA }) {
     if(!isUnlimited&&gen.packageType!=='DATA_ONLY') body.timeLimitMin=+gen.timeLimitMin
     if(gen.speedLimitMbps) body.speedLimitMbps=+gen.speedLimitMbps
     if(gen.validityDays) body.validityDays=+gen.validityDays
-    const res=await fetch('/api/vouchers/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
-    const d=await res.json()
-    if(d.success){setMsg(`✅ تم توليد ${d.count} كارت`);window.open(`${d.isQR?'/print-qr':'/print'}?batch=${d.printBatch}&sa=1`,'_blank')}
+    const srv=admins.find(a=>a.id===gen.hotspotAdminId)?.__srv
+    const d=await rpc(srv,'/api/vouchers/generate',{method:'POST',body})
+    if(d.success){setMsg(`✅ تم توليد ${d.count} كارت على ${SERVERS[srv||'gamma']?.label}`);window.open(`${SERVERS[srv||'gamma']?.url||''}${d.isQR?'/print-qr':'/print'}?batch=${d.printBatch}&sa=1`,'_blank')}
     else setMsg('❌ '+d.error)
     setLoading(false)
   }
 
   return (
     <div style={S.card}>
-      <h3 style={{fontSize:14,fontWeight:700,color:'#E2F0FB',marginBottom:14}}>✨ توليد كروت (السوبر أدمن)</h3>
+      <h3 style={{fontSize:14,fontWeight:700,color:'#E2F0FB',marginBottom:14}}>✨ توليد كروت (السوبر أدمن) — لأي كافيه على أي سيرفر</h3>
       {msg&&<div style={S.msg(msg.startsWith('✅'))}>{msg}<span onClick={()=>setMsg('')} style={{cursor:'pointer'}}>✕</span></div>}
       <div className="form-grid-2" style={{marginBottom:14}}>
-        <div style={{gridColumn:'span 2'}}><label style={S.label}>👤 الأدمن</label><select style={S.input} value={gen.hotspotAdminId} onChange={e=>setGen({...gen,hotspotAdminId:e.target.value})}><option value="">اختر أدمن...</option>{admins.map(a=><option key={a.id} value={a.id}>{a.name} (@{a.username})</option>)}</select></div>
+        <div style={{gridColumn:'span 2'}}><label style={S.label}>👤 الأدمن (كل السيرفرات)</label><select style={S.input} value={gen.hotspotAdminId} onChange={e=>setGen({...gen,hotspotAdminId:e.target.value})}><option value="">اختر أدمن...</option>{admins.map(a=><option key={a.id} value={a.id}>{a.name} (@{a.username}) — {SERVERS[a.__srv||'gamma']?.label}</option>)}</select>
+          {gen.hotspotAdminId&&<div style={{fontSize:10,color:'#fb923c',marginTop:5}}>📍 الكروت هتتولد على: {SERVERS[admins.find(a=>a.id===gen.hotspotAdminId)?.__srv||'gamma']?.label}</div>}
+        </div>
         <div style={{gridColumn:'span 2'}}>
           <label style={S.label}>🖥️ الجهاز <span style={{color:'#FF4444'}}>*</span></label>
           <select style={{...S.input,opacity:!gen.hotspotAdminId?0.4:1}} value={gen.deviceId} onChange={e=>setGen({...gen,deviceId:e.target.value})} disabled={!gen.hotspotAdminId}>
@@ -648,16 +749,19 @@ function GenerateTab({ sa }:{ sa:SA }) {
 
 function RewardsTab({ sa }:{ sa:SA }) {
   const [tasks,setTasks]=useState<any[]>([]); const [msg,setMsg]=useState(''); const [showNew,setShowNew]=useState(false)
+  const [srv,setSrv]=useState('gamma')
   const [form,setForm]=useState({title:'',description:'',url:'',callbackSecret:'',rewardType:'EXTRA_TIME',rewardTimeMins:30,rewardDataMB:0,level:1,requiredCount:1,order:0})
-  const load=useCallback(async()=>{const r=await fetch('/api/rewards/tasks');const d=await r.json();setTasks(d.tasks||[])},[])
+  const load=useCallback(async()=>{
+    const bySrv=await rpcAll('/api/rewards/tasks')
+    setTasks(SERVER_KEYS.flatMap(k=>(((bySrv[k]&&!bySrv[k].error)?bySrv[k].tasks:[])||[]).map((t:any)=>({...t,__srv:k}))))
+  },[])
   useEffect(()=>{load()},[load])
   const create=async()=>{
-    const r=await fetch('/api/rewards/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...form,rewardTimeMins:+form.rewardTimeMins||null,rewardDataMB:+form.rewardDataMB||null,superAdminId:sa.id})})
-    const d=await r.json()
-    if(d.success){setMsg('✅ تم');load();setShowNew(false)} else setMsg('❌ '+d.error)
+    const d=await rpc(srv,'/api/rewards/tasks',{method:'POST',body:{...form,rewardTimeMins:+form.rewardTimeMins||null,rewardDataMB:+form.rewardDataMB||null,superAdminId:'__SERVER_SA__'}})
+    if(d.success){setMsg(`✅ تم على ${SERVERS[srv]?.label}`);load();setShowNew(false)} else setMsg('❌ '+d.error)
   }
-  const toggle=async(t:any)=>{await fetch('/api/rewards/tasks',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:t.id,isActive:!t.isActive})});load()}
-  const del=async(id:string)=>{if(!confirm('حذف؟')) return;await fetch('/api/rewards/tasks',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});load()}
+  const toggle=async(t:any)=>{await rpc(t.__srv,'/api/rewards/tasks',{method:'PUT',body:{id:t.id,isActive:!t.isActive}});load()}
+  const del=async(t:any)=>{if(!confirm('حذف؟')) return;await rpc(t.__srv,'/api/rewards/tasks',{method:'DELETE',body:{id:t.id}});load()}
   return (
     <div>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
@@ -676,6 +780,7 @@ function RewardsTab({ sa }:{ sa:SA }) {
             {(form.rewardType==='EXTRA_DATA'||form.rewardType==='BOTH')&&<div><label style={S.label}>MB إضافية</label><input style={S.input} type="number" value={form.rewardDataMB} onChange={e=>setForm({...form,rewardDataMB:+e.target.value})}/></div>}
           </div>
           <div style={{display:'flex',gap:8}}><button style={S.btn()} onClick={create}>💾 حفظ</button><button style={{...S.btn('#1C2A40','#6B8CAE')}} onClick={()=>setShowNew(false)}>إلغاء</button></div>
+          <div style={{marginTop:10}}><label style={S.label}>🖥️ السيرفر اللي المهمة هتظهر فيه</label><select style={S.input} value={srv} onChange={e=>setSrv(e.target.value)}>{SERVER_KEYS.map(k=><option key={k} value={k}>{SERVERS[k].label}</option>)}</select></div>
         </div>
       )}
       {tasks.map(t=>(
@@ -683,6 +788,7 @@ function RewardsTab({ sa }:{ sa:SA }) {
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:8}}>
             <div style={{flex:1,minWidth:0}}>
               <div style={{fontSize:13,fontWeight:700,color:'#E2F0FB',marginBottom:3}}>{t.title}</div>
+              <SrvBadge srv={t.__srv}/>
               <div style={{fontSize:10,color:'#354E6A',fontFamily:'monospace',marginBottom:5,wordBreak:'break-all'}}>🔗 {t.url}</div>
               <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
                 <span style={S.tag(true)}>Lvl {t.level}</span>
@@ -692,7 +798,7 @@ function RewardsTab({ sa }:{ sa:SA }) {
             </div>
             <div style={{display:'flex',gap:6,flexShrink:0}}>
               <button onClick={()=>toggle(t)} style={{...S.btn(t.isActive?'rgba(255,68,68,0.1)':'rgba(0,230,118,0.1)',t.isActive?'#FF4444':'#00E676'),border:`1px solid ${t.isActive?'rgba(255,68,68,0.3)':'rgba(0,230,118,0.3)'}`,fontSize:11,padding:'6px 10px'}}>{t.isActive?'⏸':'▶️'}</button>
-              <button onClick={()=>del(t.id)} style={{...S.btn('rgba(255,68,68,0.08)','#FF4444'),border:'1px solid rgba(255,68,68,0.25)',fontSize:11,padding:'6px 10px'}}>🗑️</button>
+              <button onClick={()=>del(t)} style={{...S.btn('rgba(255,68,68,0.08)','#FF4444'),border:'1px solid rgba(255,68,68,0.25)',fontSize:11,padding:'6px 10px'}}>🗑️</button>
             </div>
           </div>
         </div>
@@ -704,13 +810,12 @@ function RewardsTab({ sa }:{ sa:SA }) {
 function WifiTab() {
   const [admins,setAdmins]=useState<Admin[]>([]); const [devices,setDevices]=useState<any[]>([])
   const [selAdmin,setSelAdmin]=useState(''); const [selDev,setSelDev]=useState(''); const [newSSID,setNewSSID]=useState(''); const [msg,setMsg]=useState(''); const [loading,setLoading]=useState(false)
-  useEffect(()=>{fetch('/api/superadmin/admins').then(r=>r.json()).then(d=>{if(Array.isArray(d)) setAdmins(d)})},[])
-  useEffect(()=>{if(!selAdmin) return;fetch(`/api/admin/devices?adminId=${selAdmin}`).then(r=>r.json()).then(d=>{if(Array.isArray(d)) setDevices(d)})},[selAdmin])
+  useEffect(()=>{loadAllAdmins().then(d=>setAdmins(d))},[])
+  useEffect(()=>{if(!selAdmin) return;rpc(admins.find(a=>a.id===selAdmin)?.__srv,`/api/admin/devices?adminId=${selAdmin}`).then(d=>{if(Array.isArray(d)) setDevices(d)})},[selAdmin,admins])
   const change=async()=>{
     if(!selDev||!newSSID.trim()){setMsg('❌ اختار الجهاز وأدخل الاسم');return}
     setLoading(true)
-    const r=await fetch('/api/admin/wifi',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({deviceId:selDev,newSSID})})
-    const d=await r.json()
+    const d=await rpc(admins.find(a=>a.id===selAdmin)?.__srv,'/api/admin/wifi',{method:'POST',body:{deviceId:selDev,newSSID}})
     setMsg(d.success?`✅ ${d.message}`:`❌ ${d.error}`)
     setLoading(false)
   }
@@ -719,7 +824,7 @@ function WifiTab() {
       <h3 style={{fontSize:14,fontWeight:700,color:'#E2F0FB',marginBottom:14}}>📶 تغيير اسم الـ WiFi</h3>
       {msg&&<div style={S.msg(msg.startsWith('✅'))}>{msg}<span onClick={()=>setMsg('')} style={{cursor:'pointer'}}>✕</span></div>}
       <div className="form-grid-2" style={{marginBottom:12}}>
-        <div><label style={S.label}>الأدمن</label><select style={{...S.input}} value={selAdmin} onChange={e=>{setSelAdmin(e.target.value);setSelDev('')}}><option value="">اختر...</option>{admins.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select></div>
+        <div><label style={S.label}>الأدمن (كل السيرفرات)</label><select style={{...S.input}} value={selAdmin} onChange={e=>{setSelAdmin(e.target.value);setSelDev('')}}><option value="">اختر...</option>{admins.map(a=><option key={a.id} value={a.id}>{a.name} · {SERVERS[a.__srv||'gamma']?.label}</option>)}</select></div>
         <div><label style={S.label}>الجهاز</label><select style={{...S.input}} value={selDev} onChange={e=>setSelDev(e.target.value)} disabled={!selAdmin}><option value="">اختر...</option>{devices.map((d:any)=><option key={d.id} value={d.id}>{d.name}</option>)}</select></div>
         <div style={{gridColumn:'span 2'}}><label style={S.label}>اسم الـ WiFi الجديد</label><input style={{...S.input,fontFamily:'monospace',direction:'ltr'}} value={newSSID} onChange={e=>setNewSSID(e.target.value)} placeholder="CafeNile_Free" maxLength={32}/></div>
       </div>
@@ -732,12 +837,12 @@ function SASalesTab() {
   const [admins,setAdmins]=useState<Admin[]>([]); const [selAdmin,setSelAdmin]=useState(''); const [period,setPeriod]=useState('month')
   const [sales,setSales]=useState<any[]>([]); const [totals,setTotals]=useState({revenue:0,count:0}); const [loading,setLoading]=useState(false)
 
-  useEffect(()=>{fetch('/api/superadmin/admins').then(r=>r.json()).then(d=>{if(Array.isArray(d)) setAdmins(d)})},[])
+  useEffect(()=>{loadAllAdmins().then(d=>setAdmins(d))},[])
   const load=useCallback(async()=>{
     if(!selAdmin) return; setLoading(true)
-    try{const r=await fetch(`/api/admin/sales?adminId=${selAdmin}&period=${period}`);const d=await r.json();setSales(d.sales||[]);setTotals({revenue:d.totalRevenue||0,count:d.totalCount||0})}catch{}
+    try{const d=await rpc(admins.find(a=>a.id===selAdmin)?.__srv,`/api/admin/sales?adminId=${selAdmin}&period=${period}`);setSales(d.sales||[]);setTotals({revenue:d.totalRevenue||0,count:d.totalCount||0})}catch{}
     setLoading(false)
-  },[selAdmin,period])
+  },[selAdmin,period,admins])
   useEffect(()=>{load()},[selAdmin,period])
 
   const PMETHODS:Record<string,string>={CASH:'💵 كاش',CARD:'💳 كارت',TRANSFER:'📲 تحويل',OTHER:'🔄 أخرى'}
@@ -747,7 +852,7 @@ function SASalesTab() {
     <div>
       <div style={{...S.card,marginBottom:12,padding:12}}>
         <div style={{display:'flex',gap:10,alignItems:'flex-end',flexWrap:'wrap'}}>
-          <div style={{flex:'1 1 180px'}}><label style={S.label}>الأدمن</label><select style={{...S.input,padding:'8px 11px',fontSize:12}} value={selAdmin} onChange={e=>setSelAdmin(e.target.value)}><option value="">اختر أدمن...</option>{admins.map(a=><option key={a.id} value={a.id}>{a.name} (@{a.username})</option>)}</select></div>
+          <div style={{flex:'1 1 180px'}}><label style={S.label}>الأدمن (كل السيرفرات)</label><select style={{...S.input,padding:'8px 11px',fontSize:12}} value={selAdmin} onChange={e=>setSelAdmin(e.target.value)}><option value="">اختر أدمن...</option>{admins.map(a=><option key={a.id} value={a.id}>{a.name} (@{a.username}) · {SERVERS[a.__srv||'gamma']?.label}</option>)}</select></div>
           <div><label style={S.label}>الفترة</label><div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{PERIODS.map(p=>(<button key={p.v} onClick={()=>setPeriod(p.v)} style={{...S.btn(period===p.v?'#0088CC':'#111B2D',period===p.v?'#000':'#6B8CAE'),border:'1px solid #1C2A40',fontSize:11,padding:'6px 10px'}}>{p.l}</button>))}</div></div>
         </div>
       </div>
@@ -759,6 +864,7 @@ function SASalesTab() {
             {admins.map((a,i)=>(
               <div key={i} style={{background:'#070B12',border:'1px solid #1C2A40',borderRadius:10,padding:'11px 13px',cursor:'pointer'}} onClick={()=>setSelAdmin(a.id)}>
                 <div style={{fontSize:12,fontWeight:700,color:'#E2F0FB',marginBottom:5}}>{a.name}</div>
+                <SrvBadge srv={a.__srv}/>
                 <div style={{fontSize:10,color:'#6B8CAE'}}>🎫 {a.totalVouchersGenerated}/{a.maxVouchersTotal}</div>
                 <div style={{marginTop:7,height:3,background:'#1C2A40',borderRadius:2,overflow:'hidden'}}><div style={{width:`${Math.min(100,(a.totalVouchersGenerated/a.maxVouchersTotal)*100)}%`,height:'100%',background:'#0088CC',borderRadius:2}}/></div>
                 <div style={{fontSize:9,color:'#354E6A',marginTop:3}}>اضغط لعرض المبيعات</div>
@@ -1166,13 +1272,13 @@ function ImportTab({ sa }: { sa: SA }) {
   const [validityDays,  setValidityDays]  = useState('')
 
   useEffect(() => {
-    fetch('/api/superadmin/admins').then(r => r.json()).then(d => { if (Array.isArray(d)) setAdmins(d) })
+    loadAllAdmins().then(d => setAdmins(d))
   }, [])
 
   useEffect(() => {
     if (!selAdmin) { setDevices([]); setSelDev(''); return }
-    fetch(`/api/admin/devices?adminId=${selAdmin}`).then(r => r.json()).then(d => { if (Array.isArray(d)) setDevices(d) })
-  }, [selAdmin])
+    rpc(admins.find(a=>a.id===selAdmin)?.__srv, `/api/admin/devices?adminId=${selAdmin}`).then(d => { if (Array.isArray(d)) setDevices(d) })
+  }, [selAdmin, admins])
 
   const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -1207,10 +1313,9 @@ function ImportTab({ sa }: { sa: SA }) {
     if (!csvText.trim()) { setResult({ error: 'ارفع ملف CSV أو الصق الأكواد' }); return }
     setLoading(true); setResult(null)
     try {
-      const res = await fetch('/api/superadmin/import-vouchers', {
+      const d = await rpc(admins.find(a=>a.id===selAdmin)?.__srv, '/api/superadmin/import-vouchers', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+        body: {
           hotspotAdminId: selAdmin,
           deviceId:       selDev,
           csvText,
@@ -1218,9 +1323,8 @@ function ImportTab({ sa }: { sa: SA }) {
           dataLimitMB:   pkg !== 'TIME_ONLY'  ? parseInt(dataLimitMB)  || null : null,
           timeLimitMin:  pkg !== 'DATA_ONLY'  ? parseInt(timeLimitMin) || null : null,
           validityDays:  validityDays ? parseInt(validityDays) : null,
-        }),
+        },
       })
-      const d = await res.json()
       setResult(d)
     } catch (e: any) {
       setResult({ error: e.message })
@@ -1241,11 +1345,12 @@ function ImportTab({ sa }: { sa: SA }) {
         {/* اختيار أدمن + جهاز */}
         <div className="form-grid-2" style={{ marginBottom: 14 }}>
           <div>
-            <label style={S.label}>👤 الأدمن</label>
+            <label style={S.label}>👤 الأدمن (كل السيرفرات)</label>
             <select style={S.input} value={selAdmin} onChange={e => { setSelAdmin(e.target.value); setSelDev('') }}>
               <option value="">اختر أدمن...</option>
-              {admins.map(a => <option key={a.id} value={a.id}>{a.name} (@{a.username})</option>)}
+              {admins.map(a => <option key={a.id} value={a.id}>{a.name} (@{a.username}) — {SERVERS[a.__srv||'gamma']?.label}</option>)}
             </select>
+            {selAdmin && <div style={{fontSize:10,color:'#fb923c',marginTop:5}}>📍 الاستيراد هيتم على: {SERVERS[admins.find(a=>a.id===selAdmin)?.__srv||'gamma']?.label}</div>}
           </div>
           <div>
             <label style={S.label}>🖥️ الجهاز</label>
@@ -1370,16 +1475,18 @@ function PlanRequestsTab() {
   const [filter, setFilter]       = useState<'PENDING'|'APPROVED'|'REJECTED'|'ALL'>('PENDING')
   const [loading, setLoading]     = useState(true)
   const [msg, setMsg]             = useState('')
-  const [rejectModal, setRejectModal] = useState<{id:string,name:string}|null>(null)
+  const [rejectModal, setRejectModal] = useState<{id:string,name:string,srv?:string}|null>(null)
   const [rejectNote, setRejectNote]   = useState('')
   const [acting, setActing]       = useState<string|null>(null)
+  const [actingSrv, setActingSrv] = useState<string|undefined>(undefined)
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await fetch(`/api/superadmin/plan-requests?status=${filter}`)
-      const d   = await res.json()
-      if (Array.isArray(d)) setRequests(d)
+      const bySrv = await rpcAll(`/api/superadmin/plan-requests?status=${filter}`)
+      const all = SERVER_KEYS.flatMap(k=>(((bySrv[k]&&!bySrv[k].error)?bySrv[k]:[])||[]).map((r:any)=>({...r,__srv:k})))
+        .sort((a:any,b:any)=>new Date(b.createdAt).getTime()-new Date(a.createdAt).getTime())
+      setRequests(all)
     } catch {}
     setLoading(false)
   }, [filter])
@@ -1388,18 +1495,16 @@ function PlanRequestsTab() {
 
   const doAction = async (requestId: string, action: 'approve'|'reject', planName: string) => {
     if (action === 'reject' && !rejectNote.trim()) {
-      setRejectModal({ id: requestId, name: planName }); return
+      setRejectModal({ id: requestId, name: planName, srv: rejectModal?.srv || actingSrv || 'gamma' }); return
     }
     setActing(requestId)
     try {
-      const res = await fetch('/api/superadmin/plan-requests', {
+      const d = await rpc(actingSrv, '/api/superadmin/plan-requests', {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ requestId, action, rejectNote: action==='reject'?rejectNote:undefined }),
+        body: { requestId, action, rejectNote: action==='reject'?rejectNote:undefined },
       })
-      const d = await res.json()
       if (d.success) {
-        setMsg(action==='approve'?'✅ تمت الموافقة وتفعيل الباقة!':'❌ تم رفض الطلب')
+        setMsg(action==='approve'?`✅ تمت الموافقة وتفعيل الباقة على ${SERVERS[actingSrv||'gamma']?.label}!`:'❌ تم رفض الطلب')
         setRejectModal(null); setRejectNote('')
         load()
       } else { setMsg('❌ ' + (d.error||'خطأ')) }
@@ -1455,6 +1560,7 @@ function PlanRequestsTab() {
                     {/* بيانات الأدمن */}
                     <div style={{fontSize:11,color:'#6B8CAE',marginBottom:4}}>
                       👤 <strong style={{color:'#00D4FF'}}>{r.hotspotAdmin?.name}</strong> · @{r.hotspotAdmin?.username} · {r.hotspotAdmin?.email}
+                      <SrvBadge srv={r.__srv}/>
                       <span style={{marginRight:6,fontSize:10,color:'#354E6A'}}>[باقته الحالية: {r.hotspotAdmin?.planName||'مجاني'}]</span>
                     </div>
                     <div style={{fontSize:10,color:'#354E6A',marginBottom:6}}>
@@ -1479,11 +1585,11 @@ function PlanRequestsTab() {
                   {/* أزرار الموافقة/الرفض */}
                   {isPending && (
                     <div style={{display:'flex',gap:6,flexShrink:0,flexWrap:'wrap'}}>
-                      <button onClick={()=>doAction(r.id,'approve',r.planName)} disabled={acting===r.id}
+                      <button onClick={()=>{setActingSrv(r.__srv);doAction(r.id,'approve',r.planName)}} disabled={acting===r.id}
                         style={{...S.btn('rgba(0,230,118,0.12)','#00E676'),border:'1px solid rgba(0,230,118,0.3)',padding:'8px 14px',fontSize:12,opacity:acting===r.id?0.6:1}}>
                         {acting===r.id?'⏳':'✅ موافقة'}
                       </button>
-                      <button onClick={()=>setRejectModal({id:r.id,name:r.planName})} disabled={acting===r.id}
+                      <button onClick={()=>{setActingSrv(r.__srv);setRejectModal({id:r.id,name:r.planName,srv:r.__srv})}} disabled={acting===r.id}
                         style={{...S.btn('rgba(255,68,68,0.08)','#FF4444'),border:'1px solid rgba(255,68,68,0.2)',padding:'8px 14px',fontSize:12,opacity:acting===r.id?0.6:1}}>
                         ❌ رفض
                       </button>
@@ -1533,9 +1639,9 @@ function PlansTab() {
 
   const load = useCallback(async () => {
     setLoading(true)
-    const res = await fetch(`/api/superadmin/plans${filter!=='all'?`?status=${filter}`:''}`)
-    const d   = await res.json()
-    if (Array.isArray(d)) setAdmins(d)
+    const bySrv = await rpcAll(`/api/superadmin/plans${filter!=='all'?`?status=${filter}`:''}`)
+    const all = SERVER_KEYS.flatMap(k=>(((bySrv[k]&&!bySrv[k].error)?bySrv[k]:[])||[]).map((a:any)=>({...a,__srv:k})))
+    setAdmins(all)
     setLoading(false)
   }, [filter])
 
@@ -1572,24 +1678,22 @@ function PlansTab() {
     if (!editing) return
     setSaving(true)
     try {
-      const res = await fetch('/api/superadmin/plans', {
+      const d = await rpc((editing as any).__srv, '/api/superadmin/plans', {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ adminId: editing.id, ...editData }),
+        body: { adminId: editing.id, ...editData },
       })
-      const d = await res.json()
-      if (d.success) { setMsg('✅ تم الحفظ'); load(); setEditing(null) }
+      if (d.success) { setMsg(`✅ تم الحفظ على ${SERVERS[(editing as any).__srv||'gamma']?.label}`); load(); setEditing(null) }
       else setMsg('❌ ' + (d.error || 'خطأ'))
     } catch { setMsg('❌ خطأ في الاتصال') }
     setSaving(false)
   }
 
-  const quickAction = async (adminId: string, action: 'approve'|'suspend'|'activate') => {
-    const body: any = { adminId }
+  const quickAction = async (admin: any, action: 'approve'|'suspend'|'activate') => {
+    const body: any = { adminId: admin.id }
     if (action === 'approve')  { body.approve  = true }
     if (action === 'suspend')  { body.isActive = false }
     if (action === 'activate') { body.isActive = true; body.approve = true }
-    await fetch('/api/superadmin/plans', { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) })
+    await rpc(admin.__srv, '/api/superadmin/plans', { method:'PATCH', body })
     load()
   }
 
@@ -1654,6 +1758,7 @@ function PlansTab() {
                       </div>
                       <div>
                         <div style={{fontSize:13,fontWeight:700,color:'#E2F0FB'}}>{a.name}</div>
+                        <SrvBadge srv={a.__srv}/>
                         <div style={{fontSize:10,color:'#6B8CAE'}}>@{a.username} · {a.email}</div>
                       </div>
                     </div>
@@ -1678,13 +1783,13 @@ function PlansTab() {
                     {/* Actions */}
                     <div style={{display:'flex',gap:5}}>
                       {pending && (
-                        <button onClick={()=>quickAction(a.id,'approve')} style={{...S.btn('rgba(0,230,118,0.12)','#00E676'),border:'1px solid rgba(0,230,118,0.3)',fontSize:11,padding:'6px 10px'}} title="موافقة وتفعيل">✅ تفعيل</button>
+                        <button onClick={()=>quickAction(a,'approve')} style={{...S.btn('rgba(0,230,118,0.12)','#00E676'),border:'1px solid rgba(0,230,118,0.3)',fontSize:11,padding:'6px 10px'}} title="موافقة وتفعيل">✅ تفعيل</button>
                       )}
                       {a.isActive && !pending && (
-                        <button onClick={()=>quickAction(a.id,'suspend')} style={{...S.btn('rgba(255,68,68,0.08)','#FF4444'),border:'1px solid rgba(255,68,68,0.2)',fontSize:10,padding:'5px 8px'}} title="إيقاف">⛔</button>
+                        <button onClick={()=>quickAction(a,'suspend')} style={{...S.btn('rgba(255,68,68,0.08)','#FF4444'),border:'1px solid rgba(255,68,68,0.2)',fontSize:10,padding:'5px 8px'}} title="إيقاف">⛔</button>
                       )}
                       {!a.isActive && (
-                        <button onClick={()=>quickAction(a.id,'activate')} style={{...S.btn('rgba(0,212,255,0.08)','#00D4FF'),border:'1px solid rgba(0,212,255,0.2)',fontSize:10,padding:'5px 8px'}} title="تفعيل">▶️</button>
+                        <button onClick={()=>quickAction(a,'activate')} style={{...S.btn('rgba(0,212,255,0.08)','#00D4FF'),border:'1px solid rgba(0,212,255,0.2)',fontSize:10,padding:'5px 8px'}} title="تفعيل">▶️</button>
                       )}
                       <button onClick={()=>openEdit(a)} style={{...S.btn('#111B2D','#6B8CAE'),border:'1px solid #1C2A40',fontSize:11,padding:'6px 10px'}}>✏️ باقة</button>
                     </div>
@@ -1777,6 +1882,7 @@ function ManagePlansTab() {
   const [editing, setEditing] = useState<any|null>(null) // null = new, object = edit
   const [saving, setSaving]   = useState(false)
   const [delConfirm, setDelConfirm] = useState<string|null>(null)
+  const [delConfirmPlan, setDelConfirmPlan] = useState<any>(null)
 
   const EMPTY = { name:'', emoji:'🎯', color:'#0088CC', price:0, maxDevices:50, maxVouchersTotal:1000000,
                   canCreateUnlimited:false, canCreateNFC:false, canCreateQR:false, canRenewVouchers:true,
@@ -1785,15 +1891,14 @@ function ManagePlansTab() {
 
   const load = useCallback(async () => {
     setLoading(true)
-    const res = await fetch('/api/superadmin/manage-plans')
-    const d   = await res.json()
-    if (Array.isArray(d)) setPlans(d)
+    const bySrv = await rpcAll('/api/superadmin/manage-plans')
+    setPlans(SERVER_KEYS.flatMap(k=>(((bySrv[k]&&!bySrv[k].error)?bySrv[k]:[])||[]).map((p:any)=>({...p,__srv:k}))))
     setLoading(false)
   }, [])
 
   useEffect(() => { load() }, [load])
 
-  const openNew  = () => { setForm(EMPTY); setEditing('new') }
+  const openNew  = () => { setForm({...EMPTY, srv:'gamma'}); setEditing('new') }
   const openEdit = (p: any) => { setForm({...p}); setEditing(p.id) }
 
   const save = async () => {
@@ -1801,23 +1906,20 @@ function ManagePlansTab() {
     setSaving(true); setMsg('')
     try {
       const isNew = editing === 'new'
-      const res = await fetch('/api/superadmin/manage-plans', {
-        method: isNew ? 'POST' : 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(isNew ? form : { id: editing, ...form }),
-      })
-      const d = await res.json()
-      if (d.success) { setMsg('✅ تم الحفظ'); load(); setEditing(null) }
+      const { srv, ...rest } = form as any
+      const d = isNew
+        ? await rpc(srv || 'gamma', '/api/superadmin/manage-plans', { method:'POST', body: rest })
+        : await rpc((form as any).__srv, '/api/superadmin/manage-plans', { method:'PATCH', body: { id: editing, ...rest } })
+      if (d.success) { setMsg(`✅ تم الحفظ${isNew?` على ${SERVERS[srv||'gamma']?.label}`:''}`); load(); setEditing(null) }
       else setMsg('❌ ' + (d.error || 'خطأ'))
     } catch { setMsg('❌ خطأ في الاتصال') }
     setSaving(false)
   }
 
-  const deletePlan = async (id: string) => {
+  const deletePlan = async (p: any) => {
     setSaving(true)
     try {
-      const res = await fetch('/api/superadmin/manage-plans', { method:'DELETE', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ id }) })
-      const d = await res.json()
+      const d = await rpc(p.__srv, '/api/superadmin/manage-plans', { method:'DELETE', body: { id: p.id } })
       if (d.success) { setMsg('✅ تم الحذف'); load(); setDelConfirm(null) }
       else setMsg('❌ ' + (d.error||'خطأ'))
     } catch { setMsg('❌ خطأ') }
@@ -1836,7 +1938,7 @@ function ManagePlansTab() {
             <div style={{fontSize:14,fontWeight:700,color:'#FF4444',textAlign:'center',marginBottom:6}}>حذف الباقة؟</div>
             <div style={{fontSize:12,color:'#6B8CAE',textAlign:'center',marginBottom:16}}>لن يؤثر على الأدمنز الحاليين.</div>
             <div style={{display:'flex',gap:8}}>
-              <button onClick={()=>deletePlan(delConfirm)} disabled={saving} style={{...S.btn('rgba(255,68,68,0.15)','#FF4444'),border:'1px solid rgba(255,68,68,0.3)',flex:1,padding:'11px',opacity:saving?0.7:1}}>✅ تأكيد</button>
+              <button onClick={()=>deletePlan(delConfirmPlan)} disabled={saving} style={{...S.btn('rgba(255,68,68,0.15)','#FF4444'),border:'1px solid rgba(255,68,68,0.3)',flex:1,padding:'11px',opacity:saving?0.7:1}}>✅ تأكيد</button>
               <button onClick={()=>setDelConfirm(null)} style={{...S.btn('#111B2D','#6B8CAE'),border:'1px solid #1C2A40',flex:1}}>إلغاء</button>
             </div>
           </div>
@@ -1905,6 +2007,13 @@ function ManagePlansTab() {
             <input style={S.input} value={form.description} onChange={e=>setForm((f:any)=>({...f,description:e.target.value}))} placeholder="وصف مختصر للباقة"/>
           </div>
 
+          {editing==='new'&&(
+            <div style={{marginBottom:12}}>
+              <label style={S.label}>🖥️ السيرفر اللي الباقة هتضاف عليه</label>
+              <select style={S.input} value={(form as any).srv||'gamma'} onChange={e=>setForm((f:any)=>({...f,srv:e.target.value}))}>{SERVER_KEYS.map(k=><option key={k} value={k}>{SERVERS[k].label}</option>)}</select>
+            </div>
+          )}
+
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:14}}>
             <div>
               <label style={S.label}>ترتيب العرض</label>
@@ -1944,6 +2053,7 @@ function ManagePlansTab() {
                   <div style={{width:42,height:42,borderRadius:12,background:`${p.color}18`,border:`1px solid ${p.color}40`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:22,flexShrink:0}}>{p.emoji}</div>
                   <div>
                     <div style={{fontSize:13,fontWeight:900,color:p.color}}>{p.name}</div>
+                    <SrvBadge srv={p.__srv}/>
                     <div style={{fontSize:10,color:'#6B8CAE',marginTop:2}}>🖥️ {p.maxDevices} · 🎫 {p.maxVouchersTotal} · {p.price>0?p.price+' ج/شهر':'مجاني'}</div>
                   </div>
                 </div>
@@ -1951,7 +2061,7 @@ function ManagePlansTab() {
                   {[{v:p.canCreateUnlimited,l:'♾️'},{v:p.canCreateNFC,l:'📶'},{v:p.canCreateQR,l:'📷'},{v:p.canRenewVouchers,l:'🔄'}].map((x,i)=><span key={i} style={{fontSize:14,opacity:x.v?1:0.2}}>{x.l}</span>)}
                   <span style={{padding:'2px 8px',borderRadius:20,fontSize:10,fontWeight:700,background:p.isActive?'rgba(0,230,118,0.1)':'rgba(255,68,68,0.1)',color:p.isActive?'#00E676':'#FF4444',border:`1px solid ${p.isActive?'rgba(0,230,118,0.3)':'rgba(255,68,68,0.3)'}`}}>{p.isActive?'✅ نشط':'⛔ مخفي'}</span>
                   <button onClick={()=>openEdit(p)} style={{...S.btn('#111B2D','#6B8CAE'),border:'1px solid #1C2A40',fontSize:11,padding:'5px 10px'}}>✏️ تعديل</button>
-                  <button onClick={()=>setDelConfirm(p.id)} style={{...S.btn('rgba(255,68,68,0.08)','#FF4444'),border:'1px solid rgba(255,68,68,0.2)',fontSize:11,padding:'5px 8px'}}>🗑️</button>
+                  <button onClick={()=>{setDelConfirmPlan(p);setDelConfirm(p.id)}} style={{...S.btn('rgba(255,68,68,0.08)','#FF4444'),border:'1px solid rgba(255,68,68,0.2)',fontSize:11,padding:'5px 8px'}}>🗑️</button>
                 </div>
               </div>
               {p.description && <div style={{fontSize:11,color:'#6B8CAE',marginTop:8,paddingTop:8,borderTop:'1px solid #1C2A40'}}>{p.description}</div>}
@@ -1976,22 +2086,22 @@ function CpaTab({ sa }: { sa: SA }) {
   const [syncing, setSyncing]     = useState(false)
   const [msg,     setMsg]         = useState('')
   const [view,    setView]        = useState<'offers'|'sources'>('offers')
+  const [srv,     setSrv]         = useState('gamma')
   const [form,    setForm]        = useState({ name:'cpagrip', label:'CPAGrip', userId:'', apiKey:'', pubKey:'' })
 
   const loadSources = useCallback(async () => {
-    const r = await fetch('/api/superadmin/cpa-sources')
-    const d = await r.json()
-    setSources(d.sources || [])
+    const bySrv = await rpcAll('/api/superadmin/cpa-sources')
+    setSources(SERVER_KEYS.flatMap(k=>{const d=bySrv[k];return (((d&&!d.error)?d.sources:[])||[]).map((s:any)=>({...s,__srv:k}))}))
   }, [])
 
   const loadOffers = useCallback(async () => {
     setLoading(true)
     const params = new URLSearchParams({ page: String(page), limit: '30' })
     if (selSrc) params.set('source', selSrc)
-    const r = await fetch(`/api/superadmin/cpa-offers?${params}`)
-    const d = await r.json()
-    setOffers(d.offers || [])
-    setTotal(d.total  || 0)
+    const bySrv = await rpcAll(`/api/superadmin/cpa-offers?${params}`)
+    const all = SERVER_KEYS.flatMap(k=>{const d=bySrv[k];return (((d&&!d.error)?d.offers:[])||[]).map((o:any)=>({...o,__srv:k}))})
+    setOffers(all)
+    setTotal(SERVER_KEYS.reduce((s,k)=>{const d=bySrv[k];return s+((d&&!d.error)?d.total||0:0)},0))
     setLoading(false)
   }, [page, selSrc])
 
@@ -1999,21 +2109,17 @@ function CpaTab({ sa }: { sa: SA }) {
 
   const syncOffers = async () => {
     setSyncing(true); setMsg('')
-    const r = await fetch('/api/cron/sync-offers', { headers: { 'x-cron-secret': process.env.NEXT_PUBLIC_CRON_SECRET || '' } })
-    const d = await r.json()
-    if (d.success) {
-      setMsg(`✅ تمت المزامنة — ${Object.entries(d.results).map(([k,v]:any)=>`${k}: +${v.added} جديد، ${v.updated} محدّث`).join(' | ')}`)
-      loadOffers()
-    } else {
-      setMsg('❌ ' + (d.error || 'خطأ في المزامنة'))
-    }
+    const secret = process.env.NEXT_PUBLIC_CRON_SECRET || ''
+    const bySrv = await rpcAll(`/api/cron/sync-offers?secret=${secret}`)
+    const parts = SERVER_KEYS.map(k=>{const d=bySrv[k]; if(!d||d.error) return `${SERVERS[k].label}: ❌`; return `${SERVERS[k].label}: +${Object.values(d.results||{}).reduce((s:number,v:any)=>s+(v.added||0),0)} جديد`})
+    setMsg(`✅ مزامنة على كل السيرفرات — ${parts.join(' | ')}`)
+    loadOffers()
     setSyncing(false)
   }
 
   const saveSource = async () => {
-    const r = await fetch('/api/superadmin/cpa-sources', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(form) })
-    const d = await r.json()
-    if (d.success) { setMsg('✅ تم حفظ المصدر'); loadSources() } else setMsg('❌ ' + d.error)
+    const d = await rpc(srv, '/api/superadmin/cpa-sources', { method:'POST', body: form })
+    if (d.success) { setMsg(`✅ تم حفظ المصدر على ${SERVERS[srv]?.label}`); loadSources() } else setMsg('❌ ' + d.error)
   }
 
   const SOURCE_LABELS: Record<string,string> = { cpagrip:'CPAGrip', ogads:'OGAds', adgate:'AdGate', lootably:'Lootably' }
@@ -2051,6 +2157,7 @@ function CpaTab({ sa }: { sa: SA }) {
               <div><label style={S.label}>User ID</label><input style={{...S.input,direction:'ltr'}} value={form.userId} onChange={e=>setForm({...form,userId:e.target.value})} placeholder="123456"/></div>
               <div><label style={S.label}>API Key</label><input style={{...S.input,direction:'ltr'}} value={form.apiKey} onChange={e=>setForm({...form,apiKey:e.target.value})} placeholder="xxxx..."/></div>
               <div style={{gridColumn:'span 2'}}><label style={S.label}>Pub Key</label><input style={{...S.input,direction:'ltr'}} value={form.pubKey} onChange={e=>setForm({...form,pubKey:e.target.value})} placeholder="xxxx..."/></div>
+              <div style={{gridColumn:'span 2'}}><label style={S.label}>🖥️ السيرفر</label><select style={S.input} value={srv} onChange={e=>setSrv(e.target.value)}>{SERVER_KEYS.map(k=><option key={k} value={k}>{SERVERS[k].label}</option>)}</select></div>
             </div>
             <button onClick={saveSource} style={S.btn()}>💾 حفظ المصدر</button>
           </div>
@@ -2062,6 +2169,7 @@ function CpaTab({ sa }: { sa: SA }) {
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
                 <div>
                   <div style={{fontSize:13,fontWeight:700,color:'#E2F0FB'}}>{src.label}</div>
+                  <SrvBadge srv={src.__srv}/>
                   <div style={{fontSize:10,color:'#354E6A',fontFamily:'monospace'}}>user_id: {src.userId||'—'}</div>
                   {src.lastSync && <div style={{fontSize:10,color:'#6B8CAE',marginTop:2}}>🕐 آخر مزامنة: {new Date(src.lastSync).toLocaleString('ar-EG')}</div>}
                 </div>
@@ -2103,6 +2211,7 @@ function CpaTab({ sa }: { sa: SA }) {
                         <span style={S.tag(true,'#00E676')}>💰 ${o.payout}</span>
                         {o.category && <span style={S.tag(true,'#818cf8')}>{o.category}</span>}
                         <span style={S.tag(true,'#00D4FF')}>{SOURCE_LABELS[o.source]||o.source}</span>
+                        <SrvBadge srv={o.__srv}/>
                         {o.countries && <span style={S.tag(true,'#fb923c')}>🌍 {o.countries}</span>}
                       </div>
                     </div>
@@ -2137,9 +2246,7 @@ function DevicesControlTab({ sa }: { sa: SA }) {
 
   const loadAdmins = useCallback(async () => {
     setLoading(true)
-    const r = await fetch('/api/superadmin/admins')
-    const d = await r.json()
-    if (Array.isArray(d)) setAdmins(d)
+    setAdmins(await loadAllAdmins())
     setLoading(false)
   }, [])
 
@@ -2149,19 +2256,16 @@ function DevicesControlTab({ sa }: { sa: SA }) {
     if (expanded === adminId) { setExpanded(null); return }
     setExpanded(adminId)
     if (devices[adminId]) return
-    const r = await fetch(`/api/superadmin/admin-devices?adminId=${adminId}`)
-    const d = await r.json()
+    const d = await rpc(admins.find(a=>a.id===adminId)?.__srv, `/api/superadmin/admin-devices?adminId=${adminId}`)
     setDevices(prev => ({ ...prev, [adminId]: d.devices || [] }))
   }
 
   const toggleDevice = async (adminId: string, deviceId: string, currentActive: boolean) => {
     setToggling(deviceId)
-    const r = await fetch('/api/superadmin/admin-devices', {
+    const d = await rpc(admins.find(a=>a.id===adminId)?.__srv, '/api/superadmin/admin-devices', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ deviceId, isActive: !currentActive, adminId: sa.id }),
+      body: { deviceId, isActive: !currentActive, adminId: sa.id },
     })
-    const d = await r.json()
     if (d.success) {
       setDevices(prev => ({
         ...prev,
@@ -2180,8 +2284,7 @@ function DevicesControlTab({ sa }: { sa: SA }) {
       if (dev.isActive !== activate) await toggleDevice(adminId, dev.id, !activate)
     }
     // reload
-    const r = await fetch(`/api/superadmin/admin-devices?adminId=${adminId}`)
-    const d = await r.json()
+    const d = await rpc(admins.find(a=>a.id===adminId)?.__srv, `/api/superadmin/admin-devices?adminId=${adminId}`)
     setDevices(prev => ({ ...prev, [adminId]: d.devices || [] }))
   }
 
@@ -2211,6 +2314,7 @@ function DevicesControlTab({ sa }: { sa: SA }) {
                     <div style={{width:8,height:8,borderRadius:'50%',background:admin.isActive?'#00E676':'#FF4444',boxShadow:admin.isActive?'0 0 5px rgba(0,230,118,0.5)':'none',flexShrink:0}}/>
                     <div>
                       <div style={{fontSize:13,fontWeight:700,color:'#E2F0FB'}}>{admin.name}</div>
+                      <SrvBadge srv={admin.__srv}/>
                       <div style={{fontSize:10,color:'#354E6A'}}>@{admin.username} · {admin.email}</div>
                     </div>
                   </div>
@@ -2277,37 +2381,42 @@ function PortalPageTab() {
   const [loading, setLoading] = useState(false)
 
   useEffect(() => {
-    fetch('/api/superadmin/all-devices').then(r => r.json()).then(d => {
-      if (Array.isArray(d)) setDevices(d)
-    })
+    (async () => {
+      const bySrv = await rpcAll('/api/superadmin/all-devices')
+      const all = SERVER_KEYS.flatMap(k=>{const d=bySrv[k];return ((Array.isArray(d)?d:[])||[]).map((x:any)=>({...x,__srv:k}))})
+      setDevices(all)
+    })()
   }, [])
 
   const loadDevice = async (id: string) => {
     setSelDevice(id); setMsg('')
     const dev = devices.find(d => d.id === id)
     if (dev?.portalHtml) { setHtml(dev.portalHtml); return }
-    const r = await fetch(`/api/portal/page?gw_id=${dev?.gatewayId || ''}`)
-    setHtml(await r.text())
+    const srv = (dev as any)?.__srv
+    if (!srv || srv === 'gamma') {
+      const r = await fetch(`/api/portal/page?gw_id=${dev?.gatewayId || ''}`)
+      setHtml(await r.text())
+    } else {
+      const d = await rpc(srv, `/api/portal/page?gw_id=${dev?.gatewayId || ''}`)
+      setHtml(typeof d === 'string' ? d : '')
+    }
   }
 
   const save = async () => {
     if (!selDevice) return
     setLoading(true); setMsg('')
-    const r = await fetch('/api/portal/page', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ deviceId: selDevice, html })
+    const d = await rpc((selDev as any)?.__srv, '/api/portal/page', {
+      method: 'POST', body: { deviceId: selDevice, html }
     })
-    const d = await r.json()
-    setMsg(d.success ? '✅ تم الحفظ!' : `❌ ${d.error}`)
+    setMsg(d.success ? `✅ تم الحفظ على ${SERVERS[(selDev as any)?.__srv||'gamma']?.label}!` : `❌ ${d.error}`)
     setLoading(false)
   }
 
   const reset = async () => {
     if (!selDevice || !confirm('هتمسح HTML المخصص وترجع للـ Default؟')) return
     setLoading(true)
-    await fetch('/api/portal/page', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ deviceId: selDevice, html: null })
+    await rpc((selDev as any)?.__srv, '/api/portal/page', {
+      method: 'POST', body: { deviceId: selDevice, html: null }
     })
     setMsg('✅ تم الإعادة للـ Default')
     loadDevice(selDevice)
@@ -2329,7 +2438,7 @@ function PortalPageTab() {
             <option value=''>-- اختار جهاز --</option>
             {devices.map(d => (
               <option key={d.id} value={d.id}>
-                {d.name} — {d.hotspotAdmin?.name || '?'} {d.portalHtml ? '✏️' : '📄'}
+                {d.name} — {d.hotspotAdmin?.name || '?'} [{SERVERS[(d as any).__srv||'gamma']?.label}] {d.portalHtml ? '✏️' : '📄'}
               </option>
             ))}
           </select>
@@ -2337,7 +2446,7 @@ function PortalPageTab() {
         <div style={{ display: 'flex', gap: 8 }}>
           <button style={S.btn()} onClick={save} disabled={!selDevice || loading}>{loading ? '⏳' : '💾'} حفظ</button>
           <button style={S.btn('#1C3A50', '#6B8CAE')} onClick={reset} disabled={!selDevice || loading}>🔄 Default</button>
-          {selDev && <a href={`/api/portal/page?gw_id=${selDev.gatewayId}`} target='_blank' style={{ ...S.btn('#00E676', '#000'), textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}>👁️ معاينة</a>}
+          {selDev && <a href={`${SERVERS[(selDev as any)?.__srv||'gamma']?.url||''}/api/portal/page?gw_id=${selDev.gatewayId}`} target='_blank' style={{ ...S.btn('#00E676', '#000'), textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}>👁️ معاينة</a>}
         </div>
       </div>
       {msg && <div style={{ ...S.msg(msg.includes('✅')), marginBottom: 14 }}><span>{msg}</span><button onClick={() => setMsg('')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'inherit' }}>✕</button></div>}
@@ -2381,11 +2490,14 @@ function LogsTab() {
     const params = new URLSearchParams({ page: String(page), limit: '50' })
     if (search) params.set('search', search)
     if (actor)  params.set('actorType', actor)
-    const r = await fetch(`/api/superadmin/logs?${params}`)
-    const d = await r.json()
-    setLogs(d.logs   || [])
-    setTotal(d.total || 0)
-    setStats(d.stats || [])
+    const bySrv = await rpcAll(`/api/superadmin/logs?${params}`)
+    const all = SERVER_KEYS.flatMap(k=>{const d=bySrv[k];return (((d&&!d.error)?d.logs:[])||[]).map((l:any)=>({...l,__srv:k}))})
+      .sort((a:any,b:any)=>new Date(b.createdAt).getTime()-new Date(a.createdAt).getTime())
+    setLogs(all)
+    setTotal(SERVER_KEYS.reduce((s,k)=>{const d=bySrv[k];return s+((d&&!d.error)?d.total||0:0)},0))
+    const statMap:Record<string,number>={}
+    SERVER_KEYS.forEach(k=>{const d=bySrv[k];if(d&&!d.error)(d.stats||[]).forEach((st:any)=>{statMap[st.action]=(statMap[st.action]||0)+st._count.id})})
+    setStats(Object.entries(statMap).map(([action,cnt])=>({action,_count:{id:cnt}})).sort((a:any,b:any)=>b._count.id-a._count.id))
     setLoading(false)
   }, [page, search, actor])
 
@@ -2469,7 +2581,7 @@ function LogsTab() {
                             {log.action}
                           </span>
                         </td>
-                        <td style={{padding:'8px 12px',color:'#6B8CAE',fontSize:11}}>{log.entityType}{log.entityId&&<span style={{color:'#354E6A',fontSize:9}}> #{log.entityId.slice(-6)}</span>}</td>
+                        <td style={{padding:'8px 12px',color:'#6B8CAE',fontSize:11}}>{log.entityType}{log.entityId&&<span style={{color:'#354E6A',fontSize:9}}> #{log.entityId.slice(-6)}</span>} <SrvBadge srv={(log as any).__srv}/></td>
                         <td style={{padding:'8px 12px',fontSize:11}}>
                           <span style={{color:log.actorType==='SUPER_ADMIN'?'#00D4FF':log.actorType==='SYSTEM'?'#818cf8':'#fb923c',fontWeight:600}}>{log.actorType}</span>
                           {log.actorId&&<span style={{color:'#354E6A',fontSize:9,display:'block'}}>#{log.actorId.slice(-6)}</span>}
@@ -2505,112 +2617,10 @@ function LogsTab() {
   )
 }
 
-// ─── كل السيرفرات: عرض كل الكافيهات من كل النشرات في مكان واحد ──────────────
-type AggAdmin = { id:string; name:string; username:string; isActive:boolean; totalVouchersGenerated:number; _count?:{devices:number;vouchers:number} }
-type AggServer = { key:string; label:string; url:string; ok:boolean; self:boolean; error?:string|null; admins:AggAdmin[] }
-
-function AllServersTab() {
-  const [servers,setServers]=useState<AggServer[]|null>(null)
-  const [total,setTotal]=useState(0)
-  const [fetchedAt,setFetchedAt]=useState('')
-  const [loading,setLoading]=useState(true)
-  const [notAvailable,setNotAvailable]=useState(false)
-
-  const load=useCallback(async()=>{
-    setLoading(true); setNotAvailable(false)
-    try{
-      const r=await fetch('/api/superadmin/aggregate')
-      if(!r.ok){ setNotAvailable(true); setServers(null) } 
-      else{
-        const d=await r.json()
-        setServers(d.servers||[]); setTotal(d.totalCafes||0)
-        setFetchedAt(d.fetchedAt?new Date(d.fetchedAt).toLocaleTimeString('ar-EG'):'')
-      }
-    }catch{ setNotAvailable(true); setServers(null) }
-    setLoading(false)
-  },[])
-  useEffect(()=>{ load() },[load])
-
-  if(loading) return <div style={{textAlign:'center',padding:60,color:'#6B8CAE'}}>⏳ جاري جمع الكافيهات من كل السيرفرات...</div>
-
-  if(notAvailable) return (
-    <div style={{...S.card,textAlign:'center',padding:40,color:'#6B8CAE'}}>
-      <div style={{fontSize:40,marginBottom:10}}>🌍</div>
-      <div style={{fontSize:14,fontWeight:700,color:'#E2F0FB',marginBottom:6}}>الميزة دي متاحة على السيرفر الرئيسي بس</div>
-      <div style={{fontSize:12}}>افتح لوحة السوبر أدمن على: <code style={{color:'#00D4FF'}}>https://hotspot-system-gamma.vercel.app/superadmin</code></div>
-    </div>
-  )
-
-  return (
-    <div>
-      {/* ملخص عام */}
-      <div style={{...S.card,marginBottom:12,display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:10}}>
-        <div style={{display:'flex',gap:14,alignItems:'center',flexWrap:'wrap'}}>
-          <div style={{fontSize:16,fontWeight:800,color:'#E2F0FB'}}>🌍 كل الكافيهات على كل السيرفرات</div>
-          <span style={S.tag(true)}>{total} كافيه</span>
-          <span style={S.tag(true,'#00E676')}>{servers?.filter(s=>s.ok).length||0}/{servers?.length||0} سيرفر متصل</span>
-          {fetchedAt&&<span style={{fontSize:10,color:'#354E6A'}}>آخر تحديث: {fetchedAt}</span>}
-        </div>
-        <button onClick={load} style={{...S.btn('#111B2D','#6B8CAE'),border:'1px solid #1C2A40',fontSize:11,padding:'7px 14px'}}>🔄 تحديث</button>
-      </div>
-
-      {servers&&servers.map(sv=>(
-        <div key={sv.key} style={{...S.card,marginBottom:14,padding:0,overflow:'hidden'}}>
-          {/* هيدر السيرفر */}
-          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8,padding:'11px 16px',background:sv.ok?'rgba(0,136,204,0.06)':'rgba(255,68,68,0.06)',borderBottom:'1px solid #1C2A40'}}>
-            <div style={{display:'flex',gap:9,alignItems:'center',flexWrap:'wrap'}}>
-              <span style={{fontSize:15}}>{sv.ok?'✅':'❌'}</span>
-              <span style={{fontSize:13,fontWeight:800,color:sv.ok?'#00D4FF':'#FF4444'}}>{sv.label}</span>
-              {sv.self&&<span style={S.tag(true,'#fb923c')}>السيرفر ده</span>}
-              <span style={{fontSize:10,color:'#354E6A',fontFamily:'monospace',direction:'ltr'}}>{sv.url.replace('https://','')}</span>
-              <span style={S.tag(sv.ok,'#00E676')}>{sv.admins.length} كافيه</span>
-            </div>
-            <a href={`${sv.url}/superadmin`} target="_blank" rel="noreferrer" style={{...S.btn('#111B2D','#6B8CAE'),textDecoration:'none',border:'1px solid #1C2A40',fontSize:10,padding:'5px 10px'}}>فتح لوحة السيرفر ↗</a>
-          </div>
-
-          {!sv.ok ? (
-            <div style={{padding:16,color:'#FF4444',fontSize:12}}>⚠️ السيرفر مش متاح حالياً — {sv.error}</div>
-          ) : sv.admins.length===0 ? (
-            <div style={{padding:16,color:'#354E6A',fontSize:12,textAlign:'center'}}>مفيش كافيهات على السيرفر ده</div>
-          ) : (
-            <div style={{overflowX:'auto'}}>
-              <table style={{width:'100%',borderCollapse:'collapse',fontSize:12,direction:'rtl'}}>
-                <thead>
-                  <tr style={{background:'#070B12',borderBottom:'1px solid #1C2A40'}}>
-                    {['الكافيه','اليوزر','الحالة','أجهزة','كروت','إجمالي المولد','اللوحة'].map(h=>(
-                      <th key={h} style={{padding:'8px 12px',color:'#6B8CAE',fontWeight:600,textAlign:'right',fontSize:11,whiteSpace:'nowrap'}}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {sv.admins.map((a)=>(
-                    <tr key={a.id} style={{borderBottom:'1px solid #0C1420'}}>
-                      <td style={{padding:'8px 12px',color:'#E2F0FB',fontWeight:700,fontSize:12}}>{a.name}</td>
-                      <td style={{padding:'8px 12px',color:'#6B8CAE',fontFamily:'monospace',fontSize:11,direction:'ltr',textAlign:'right'}}>@{a.username}</td>
-                      <td style={{padding:'8px 12px'}}><span style={S.tag(a.isActive,a.isActive?'#00E676':'#FF4444')}>{a.isActive?'نشط':'موقوف'}</span></td>
-                      <td style={{padding:'8px 12px',color:'#00D4FF',fontWeight:700}}>{a._count?.devices??0}</td>
-                      <td style={{padding:'8px 12px',color:'#00D4FF',fontWeight:700}}>{a._count?.vouchers??0}</td>
-                      <td style={{padding:'8px 12px',color:'#6B8CAE'}}>{(a.totalVouchersGenerated||0).toLocaleString('ar-EG')}</td>
-                      <td style={{padding:'8px 12px'}}><a href={`${sv.url}/dashboard`} target="_blank" rel="noreferrer" style={{color:'#0088CC',fontSize:11,textDecoration:'none'}}>فتح ↗</a></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      ))}
-
-      <div style={{fontSize:11,color:'#354E6A',padding:'4px 6px',lineHeight:1.8}}>
-        ℹ️ كل سيرفر ليه قاعدة بيانات لوحدها (لتوزيع الطاقة المجانية) — الكروت بتشتغل على سيرفر الكافيه اللي هي مسجل عليه، والراوتر بيتصل بسيرفره.
-      </div>
-    </div>
-  )
-}
 
 export default function SuperAdminPage() {
   const [sa,setSA]=useState<SA|null>(null)
-  const [tab,setTab]=useState('allservers')
+  const [tab,setTab]=useState('admins')
   const [sideOpen,setSideOpen]=useState(false)
 
   if(!sa) return <LoginScreen onLogin={setSA}/>
@@ -2651,7 +2661,6 @@ export default function SuperAdminPage() {
 
         {/* Content */}
         <div className="app-content">
-          {tab==='allservers'&& <AllServersTab />}
           {tab==='admins'    && <AdminsTab    sa={sa}/>}
           {tab==='cafestats' && <CafeStatsTab />}
           {tab==='monitor'   && <MonitorTab />}
