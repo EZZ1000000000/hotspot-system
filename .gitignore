@@ -10,3 +10,6 @@ data/
 *.s3snap
 nohup.out
 tsconfig.tsbuildinfo
+.vercel
+.env*
+PROJECT-INFO.md
