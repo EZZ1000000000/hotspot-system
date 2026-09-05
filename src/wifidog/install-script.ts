@@ -149,8 +149,8 @@ cat > /www/cgi-bin/go << 'BRIDGE_EOF'
 SRV="${serverHost}"
 
 https_get(){
-  wget -q -T 20 -O - --no-check-certificate "$1" 2>/dev/null \\
-    || uclient-fetch -q -T 20 -O - --no-check-certificate "$1" 2>/dev/null
+  uclient-fetch -q -T 20 -O - --no-check-certificate "$1" 2>>/tmp/hotspot_https.log \\
+    || wget -q -T 20 -O - --no-check-certificate "$1" 2>>/tmp/hotspot_https.log
 }
 
 QS="$QUERY_STRING"
@@ -174,6 +174,18 @@ case "$EP" in
       echo "Auth: 0"
     else
       echo "ERR"
+    fi
+    ;;
+  authtest)
+    # فحص ذاتي — نفس مسار auth بس من غير fallback
+    # عشان الفحص يفرّق بين رد السيرفر الحقيقي وفشل الوصول
+    RESP=$(https_get "https://\${SRV}/api/wifidog/auth?\${REST}")
+    echo "Content-Type: text/plain"
+    echo ""
+    if [ -n "$RESP" ]; then
+      printf '%s\\n' "$RESP"
+    else
+      echo "BRIDGE_FAIL"
     fi
     ;;
   *)
@@ -286,20 +298,46 @@ SRV="${serverHost}"
 GW="${gwId}"
 
 https_get(){
-  wget -q -T 20 -O - --no-check-certificate "$1" 2>/dev/null \\
-    || uclient-fetch -q -T 20 -O - --no-check-certificate "$1" 2>/dev/null
+  uclient-fetch -q -T 20 -O - --no-check-certificate "$1" 2>>/tmp/hotspot_https.log \\
+    || wget -q -T 20 -O - --no-check-certificate "$1" 2>>/tmp/hotspot_https.log
 }
 
 echo "╔══════════════════════════════════════════╗"
 echo "║     اختبار الاتصال — Hotspot             ║"
 echo "╚══════════════════════════════════════════╝"
 
+# 0) هل الراوتر نفسه واصل الإنترنت أصلاً
+if ping -c 2 -W 3 8.8.8.8 >/dev/null 2>&1; then
+  echo "✅ 0) إنترنت الراوتر نفسه: واصل"
+else
+  echo "❌ 0) إنترنت الراوتر نفسه: مقطوع — الراوتر مش واصل النت خالص"
+  echo "   → دي مش مشكلة السيتام — راجع كابل/مودم الـ WAN"
+fi
+
+# 0b) DNS — لو رجع 127.0.0.1 يبقى فيه خربنة hosts قديمة
+NSL=$(nslookup "\$SRV" 2>&1 | tail -n 4)
+if echo "\$NSL" | grep -q 'Address' && ! echo "\$NSL" | grep -q '127\\.0\\.0\\.1'; then
+  echo "✅ 0b) DNS (\$SRV): تمام"
+else
+  echo "❌ 0b) DNS (\$SRV): فشل أو رجع IP غلط:"
+  echo "\$NSL" | sed 's/^/     /'
+  echo "   → لو 127.0.0.1 ظهر فوق: فيه سطر قديم في /etc/hosts امسحه"
+fi
+
+# 1) HTTPS مباشر من الراوتر للسيرفر
 T1=$(https_get "https://\$SRV/api/wifidog/ping?gw_id=\$GW")
 if [ "$T1" = "Pong" ]; then
   echo "✅ 1) الراوتر ↔ السيرفر (HTTPS مباشر): تمام"
 else
   echo "❌ 1) الراوتر ↔ السيرفر (HTTPS مباشر): فشل (رجعت: \${T1:-لا شيء})"
-  echo "   → غالباً ناقص دعم HTTPS: opkg update && opkg install libustream-mbedtls ca-bundle"
+  if command -v nc >/dev/null 2>&1 && nc -w 5 "\$SRV" 443 </dev/null >/dev/null 2>&1; then
+    echo "   → TCP 443 مفتوح، يبقى المشكلة في طبقة TLS — جرب:"
+    echo "     opkg update && opkg install libustream-mbedtls20230106 ca-bundle"
+  else
+    echo "   → TCP 443 مش مفتوح (DNS/جدار ناري/مزود الخدمة)"
+  fi
+  echo "   → آخر الأخطاء المسجلة في /tmp/hotspot_https.log:"
+  tail -n 4 /tmp/hotspot_https.log 2>/dev/null | sed 's/^/     /'
 fi
 
 UPORT=$(uci -q get uhttpd.main.listen_http 2>/dev/null | tr ' ' '\\n' | grep -v '^\\[' | head -n1 | sed 's/.*://')
@@ -313,12 +351,16 @@ else
   echo "   → جرب: /etc/init.d/uhttpd restart ثم hotspot-test تاني"
 fi
 
-# نفس الطلب بالظبط اللي wifidog بيطلبه لما تكتب الكرت (توكن وهمي → المفروض يرجع Auth: 0)
-T3=$(wget -q -T 20 -O - "http://127.0.0.1:\$UPORT/cgi-bin/go?ep=/auth/?stage=login&ip=192.168.1.99&mac=AA:BB:CC:DD:EE:FF&token=SELFTEST&gw_id=\$GW" 2>/dev/null)
+# نفس الطلب بالظبط اللي wifidog بيطلبه لما تكتب الكرت
+# لكن عبر ep=/authtest/ — من غير fallback، يعني الرد ده من السيرفر فعلاً
+# (توكن وهمي → السيرفر المفروض يرد "Auth: 0" — لو رجعت BRIDGE_FAIL يبقى الوصول مقطوع)
+T3=$(wget -q -T 20 -O - "http://127.0.0.1:\$UPORT/cgi-bin/go?ep=/authtest/?stage=login&ip=192.168.1.99&mac=AA:BB:CC:DD:EE:FF&token=SELFTEST&gw_id=\$GW" 2>/dev/null)
 if [ "$T3" = "Auth: 0" ]; then
-  echo "✅ 3) مسار التحقق من الكروت (auth): تمام — السيرفر بيرد صح"
+  echo "✅ 3) مسار التحقق من الكروت (auth): تمام — السيرفر بيرد فعلاً"
+elif [ "$T3" = "BRIDGE_FAIL" ]; then
+  echo "❌ 3) مسار التحقق من الكروت (auth): الجسر شغال، بس مش قادر يوصل للسيرفر (نفس سبب رقم 1)"
 else
-  echo "❌ 3) مسار التحقق من الكروت (auth): فشل (رجعت: \${T3:-لا شيء})"
+  echo "❌ 3) مسار التحقق من الكروت (auth): رجعت حاجة غير متوقعة (رجعت: \${T3:-لا شيء})"
 fi
 
 if pgrep wifidog >/dev/null 2>&1; then
@@ -413,7 +455,11 @@ if [ -n "$DEV_ID" ]; then
 SRV="${serverHost}"
 DEV="${deviceId}"
 [ -z "$DEV" ] && exit 0
-WANT=$(wget -q -T 20 -O - --no-check-certificate "https://\$SRV/api/admin/config?deviceId=\$DEV&type=ssid" 2>/dev/null | tr -d '[:space:]')
+https_get(){
+  uclient-fetch -q -T 20 -O - --no-check-certificate "$1" 2>>/tmp/hotspot_https.log \\
+    || wget -q -T 20 -O - --no-check-certificate "$1" 2>>/tmp/hotspot_https.log
+}
+WANT=$(https_get "https://\$SRV/api/admin/config?deviceId=\$DEV&type=ssid" 2>/dev/null | tr -d '[:space:]')
 [ -z "$WANT" ] && exit 0
 CHANGED=0
 i=0
