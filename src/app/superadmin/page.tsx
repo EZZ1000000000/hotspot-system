@@ -564,7 +564,6 @@ function VouchersTab() {
 
   useEffect(()=>{loadAllAdmins().then(d=>setAdmins(d))},[])
   const loadVouchers=useCallback(async()=>{
-    if(!selAdmin&&status!=='ALL'){setVouchers([]);return}
     setLoading(true)
     const params=new URLSearchParams({limit:'300'})
     if(selAdmin) params.set('adminId',selAdmin)
