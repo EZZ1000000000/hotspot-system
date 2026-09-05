@@ -333,7 +333,7 @@ AuthServer {
 GatewayPort         2060
 HTTPDMaxConn        253
 ClientTimeout       ${clientTimeout}
-CheckInterval       60
+CheckInterval       300
 
 PopularServers      kernel.org,ieee.org
 
