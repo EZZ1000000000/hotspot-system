@@ -261,6 +261,19 @@ case "$EP" in
       echo '{"success":false,"message":"مشكلة اتصال بالسيرفر — جرب تاني"}'
     fi
     ;;
+  apistatus)
+    # حالة الجلسة — صفحة التفعيل بتسأل بيها عن الوقت المتبقي والميجا
+    # (عبر الجسر المحلي — شغالة حتى قبل ما نت الموبايل يتفتح)
+    TOKEN=$(printf '%s' "$REST" | tr '&' '\\n' | sed -n 's/^token=//p' | head -n1)
+    RESP=$(https_get "https://\${SRV}/api/portal/session-status?token=\${TOKEN}")
+    echo "Content-Type: application/json"
+    echo ""
+    if [ -n "$RESP" ]; then
+      printf '%s' "$RESP"
+    else
+      echo '{"found":false}'
+    fi
+    ;;
   gw_message.php|gw_message)
     # رسايل wifidog (مرفوض/منتهي) — من السيرفر
     RESP=$(https_get "https://\${SRV}/api/wifidog/gw_message.php?\${REST}")
