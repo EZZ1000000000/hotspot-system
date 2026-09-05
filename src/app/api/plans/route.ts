@@ -1,6 +1,10 @@
 // /api/plans — الباقات العامة (للـ landing page والأدمن)
+// ملاحظة مهمة: force-dynamic ضروري — من غيره Next.js يبنى الـ route كنسخة ثابتة وقت الـ build
+// وتغييرات الباقات من السوبر أدمن مش تظهر غير بعد deploy جديد!
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
+
+export const dynamic = 'force-dynamic'
 
 const FALLBACK_PLANS = [
   { id:'free',       name:'مجاني',   emoji:'🚀', color:'#6B8CAE', price:0,    period:'للأبد',  maxDevices:1,  maxVouchersTotal:1000000, canCreateQR:false, canCreateNFC:false, canCreateUnlimited:false, features:['جهاز راوتر واحد','حتى مليون كارت واي فاي','لوحة تحكم كاملة','إحصائيات أساسية'], order:0 },
