@@ -10,7 +10,7 @@ export async function GET(req: NextRequest) {
 
     const todayStart = new Date(); todayStart.setHours(0,0,0,0)
 
-    const [activeSessions, devices, admins, todaySessions, cafeStats, consumptionRaw] = await Promise.all([
+    const [activeSessions, devices, admins, todaySessions, cafeStats, consumptionRaw, totalsRaw] = await Promise.all([
       // جلسات نشطة
       prisma.session.findMany({
         where: {
@@ -22,13 +22,13 @@ export async function GET(req: NextRequest) {
           voucher: { select: { code: true, packageType: true, dataLimitMB: true, timeLimitMin: true } },
         },
       }),
-      // كل الأجهزة
+      // كل الأجهزة (مع آخر heartbeat من الراوتر)
       prisma.device.findMany({
         where: adminId ? { hotspotAdminId: adminId } : {},
         select: {
           id: true, name: true, gatewayId: true, isActive: true,
           wifiSSID: true, routerIp: true, location: true,
-          tunnelPort: true,
+          tunnelPort: true, lastPingAt: true, pingCount: true,
           hotspotAdmin: { select: { name: true, username: true } },
           _count: {
             select: {
@@ -93,6 +93,12 @@ export async function GET(req: NextRequest) {
         _sum:   { dataInMB: true, dataOutMB: true, timeUsedMin: true },
         _count: { id: true },
       }),
+      // الإجماليات الدقيقة من كل الجلسات (النشطة + المنتهية) — مش النشطة بس
+      prisma.session.aggregate({
+        where: adminId ? { device: { hotspotAdminId: adminId } } : {},
+        _sum: { dataInMB: true, dataOutMB: true },
+        _count: { id: true },
+      }),
     ])
 
     // ربط الاستهلاك بأسماء الأجهزة
@@ -116,8 +122,10 @@ export async function GET(req: NextRequest) {
         totalActiveSessions: activeSessions.length,
         totalActiveDevices:  devices.filter(d => d.isActive).length,
         totalDevices:        devices.length,
-        totalDataInMB:  activeSessions.reduce((s, x) => s + x.dataInMB, 0),
-        totalDataOutMB: activeSessions.reduce((s, x) => s + x.dataOutMB, 0),
+        // الإجماليات من كل الجلسات (نشطة + منتهية) — أرقام دقيقة
+        totalDataInMB:  totalsRaw._sum.dataInMB  || 0,
+        totalDataOutMB: totalsRaw._sum.dataOutMB || 0,
+        totalSessions:  totalsRaw._count.id,
       },
       activeSessions,
       devices,

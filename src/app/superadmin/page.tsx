@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback } from 'react'
 
 type SA = { id: string; username: string; email: string }
 type Admin = { id:string; name:string; username:string; email:string; phone?:string; maxDevices:number; maxVouchersTotal:number; totalVouchersGenerated:number; isActive:boolean; createdAt:string; canCreateUnlimited:boolean; canCreateNFC:boolean; canCreateQR:boolean; canRenewVouchers:boolean; _count?:{devices:number;vouchers:number}; __srv?:string; superAdminId?:string }
-type StatsData = { summary:{totalActiveSessions:number;totalActiveDevices:number;totalDevices:number;totalDataInMB:number;totalDataOutMB:number}; activeSessions:any[]; devices:any[]; admins:any[]; consumption:{deviceId:string;deviceName:string;totalInMB:number;totalOutMB:number;totalMB:number;sessions:number;timeMin:number}[] }
+type StatsData = { summary:{totalActiveSessions:number;totalActiveDevices:number;totalDevices:number;totalDataInMB:number;totalDataOutMB:number;totalSessions?:number}; activeSessions:any[]; devices:any[]; admins:any[]; consumption:{deviceId:string;deviceName:string;totalInMB:number;totalOutMB:number;totalMB:number;sessions:number;timeMin:number}[] }
 type VoucherItem = { id:string; code:string; status:string; packageType:string; dataLimitMB:number|null; timeLimitMin:number|null; dataUsedMB:number; createdAt:string; hotspotAdmin?:{name:string}; device?:{name:string}; __srv?:string }
 
 const S = {
@@ -68,6 +68,75 @@ const SrvBadge = ({srv}:{srv?:string}) => {
   return <span style={{...S.tag(true,s.color),fontSize:9}} title={'الكافيه على سيرفر: '+s.url}>📍 {s.label}</span>
 }
 
+// ═══ حالة اتصال الأجهزة — heartbeat حقيقي من الراوتر (ping كل 60ث) ═══
+type DevFault = { type:string; msg:string; severity:'critical'|'warning'|'info' }
+type DevStatus = {
+  deviceId:string; name:string; gatewayId?:string; adminName?:string|null
+  level:'online'|'degraded'|'offline'|'never'; online:boolean; faults:DevFault[]
+  lastPingAt:string|null; lastPingAgoSec:number|null; lastPingIp?:string|null
+  sysUptime?:number|null; sysMemfree?:number|null; sysLoad?:number|null
+  wifidogUptime?:number|null; pingCount?:number; activeSessions?:number; isActive?:boolean
+  __srv?:string
+}
+
+const LEVEL_META: Record<string,{label:string;dot:string;color:string}> = {
+  online:   { label:'متصل الآن',   dot:'#00E676', color:'#00E676' },
+  degraded: { label:'اتصال ضعيف',  dot:'#fb923c', color:'#fb923c' },
+  offline:  { label:'مفصول',       dot:'#FF4444', color:'#FF4444' },
+  never:    { label:'لم يتصل أبداً', dot:'#6B8CAE', color:'#6B8CAE' },
+}
+
+const fmtAgoSec = (sec:number|null|undefined) => {
+  if (sec===null||sec===undefined) return '—'
+  if (sec<60) return `منذ ${Math.round(sec)}ث`
+  if (sec<3600) return `منذ ${Math.round(sec/60)}د`
+  if (sec<86400) return `منذ ${Math.round(sec/3600)}س`
+  return `منذ ${Math.round(sec/86400)}ي`
+}
+const fmtUp = (s:number|null|undefined) => {
+  if (s===null||s===undefined) return '—'
+  const d=Math.floor(s/86400),h=Math.floor((s%86400)/3600),m=Math.floor((s%3600)/60)
+  if(d>0) return `${d}ي ${h}س`; if(h>0) return `${h}س ${m}د`; return `${m}د`
+}
+const fmtMem = (kb:number|null|undefined) => kb===null||kb===undefined?'—':kb>=1024?`${(kb/1024).toFixed(1)}MB`:`${kb}KB`
+
+// شارة حالة الاتصال — 🟢 متصل / 🟠 ضعيف / 🔴 مفصول / ⚫ عمره ما اتصل
+const ConnBadge = ({ st, small }:{ st?:DevStatus|null; small?:boolean }) => {
+  if (!st) return <span style={{...S.tag(false),fontSize:9,whiteSpace:'nowrap'}}>⏳ لم يُفحص</span>
+  const m = LEVEL_META[st.level] || LEVEL_META.never
+  return (
+    <span style={{...S.tag(st.level==='online',m.color),fontSize:small?9:10,whiteSpace:'nowrap',cursor:'default'}} title={st.faults.map(f=>f.msg).join('\n')||m.label}>
+      <span style={{display:'inline-block',width:6,height:6,borderRadius:'50%',background:m.dot,marginLeft:4,boxShadow:st.level==='online'?`0 0 5px ${m.dot}`:'none'}}/>
+      {m.label}
+    </span>
+  )
+}
+
+// أسطر نوع العطل (لو فيه)
+const FaultLines = ({ st }:{ st?:DevStatus|null }) => {
+  if (!st || st.faults.length===0) return null
+  return (
+    <div style={{display:'flex',flexDirection:'column',gap:2,marginTop:4}}>
+      {st.faults.map((f,i)=>(
+        <div key={i} style={{fontSize:9,lineHeight:1.5,color:f.severity==='critical'?'#FF6666':f.severity==='warning'?'#fb923c':'#6B8CAE',background:f.severity==='critical'?'rgba(255,68,68,0.07)':f.severity==='warning'?'rgba(251,146,60,0.07)':'transparent',border:`1px solid ${f.severity==='critical'?'rgba(255,68,68,0.2)':f.severity==='warning'?'rgba(251,146,60,0.2)':'transparent'}`,borderRadius:5,padding:'3px 7px'}}>
+          {f.severity==='critical'?'🔴':f.severity==='warning'?'🟠':'ℹ️'} {f.msg}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// تحميل حالة كل الأجهزة على السيرفرات الأربعة (استعلام واحد لكل سيرفر)
+async function loadDevStatusAll(): Promise<Record<string,DevStatus>> {
+  const bySrv = await rpcAll('/api/superadmin/device-status')
+  const map: Record<string,DevStatus> = {}
+  SERVER_KEYS.forEach(k=>{
+    const d = bySrv[k]
+    if (d && Array.isArray(d.devices)) d.devices.forEach((x:any)=>{ map[x.deviceId]={...x,__srv:k} })
+  })
+  return map
+}
+
 const TABS = [
   { key:'admins',      icon:'👤', label:'الأدمنز' },
   { key:'cafestats',   icon:'📊', label:'إحصائيات الكافيهات' },
@@ -122,6 +191,7 @@ function AdminsTab({ sa }:{ sa:SA }) {
 
   const [expandedAdmin,setExpandedAdmin]=useState<string|null>(null)
   const [adminDevices,setAdminDevices]=useState<Record<string,any[]>>({})
+  const [devStatusByAdmin,setDevStatusByAdmin]=useState<Record<string,Record<string,DevStatus>>>({})
   const [toggling,setToggling]=useState<string|null>(null)
   const [togglingDev,setTogglingDev]=useState<string|null>(null)
 
@@ -135,6 +205,13 @@ function AdminsTab({ sa }:{ sa:SA }) {
     if(!adminDevices[adminId]){
       const d=await rpc(adminById(adminId)?.__srv,'/api/superadmin/admin-devices?adminId='+adminId)
       if(Array.isArray(d)) setAdminDevices(prev=>({...prev,[adminId]:d}))
+    }
+    // حالة الاتصال الحقيقية لكل جهاز (heartbeat من الراوتر)
+    const st=await rpc(adminById(adminId)?.__srv,'/api/superadmin/device-status?adminId='+adminId)
+    if(st&&Array.isArray(st.devices)){
+      const m:Record<string,DevStatus>={}
+      st.devices.forEach((x:any)=>{m[x.deviceId]=x})
+      setDevStatusByAdmin(prev=>({...prev,[adminId]:m}))
     }
   }
 
@@ -262,13 +339,19 @@ function AdminsTab({ sa }:{ sa:SA }) {
                 <div style={{fontSize:11,fontWeight:700,color:'#00D4FF',marginBottom:7}}>🖥️ أجهزة {a.name}</div>
                 {devs.length===0
                   ?<div style={{fontSize:11,color:'#354E6A'}}>لا يوجد أجهزة...</div>
-                  :devs.map((dev:any)=>(
+                  :devs.map((dev:any)=>{
+                    const st=devStatusByAdmin[a.id]?.[dev.id]
+                    return (
                     <div key={dev.id} style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'8px 10px',marginBottom:5,borderRadius:8,background:'#070B12',border:`1px solid ${dev.isActive?'rgba(0,230,118,0.2)':'rgba(255,68,68,0.2)'}`}}>
                       <div style={{display:'flex',alignItems:'center',gap:7,flex:1,minWidth:0}}>
                         <div style={{width:7,height:7,borderRadius:'50%',flexShrink:0,background:dev.isActive?'#00E676':'#FF4444'}}/>
-                        <div>
-                          <div style={{fontSize:12,fontWeight:700,color:dev.isActive?'#E2F0FB':'#6B8CAE'}}>{dev.name}</div>
-                          <div style={{fontSize:9,color:'#354E6A',fontFamily:'monospace'}}>{dev.gatewayId}{dev.wifiSSID&&<span style={{marginRight:6,color:'#6B8CAE'}}> 📡{dev.wifiSSID}</span>}{dev.tunnelPort&&<span style={{marginRight:6,color:'#00E676'}}> 🔌:{dev.tunnelPort}</span>}</div>
+                        <div style={{minWidth:0,flex:1}}>
+                          <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
+                            <span style={{fontSize:12,fontWeight:700,color:dev.isActive?'#E2F0FB':'#6B8CAE'}}>{dev.name}</span>
+                            <ConnBadge st={st} small/>
+                          </div>
+                          <div style={{fontSize:9,color:'#354E6A',fontFamily:'monospace',marginTop:2}}>{dev.gatewayId}{dev.wifiSSID&&<span style={{marginRight:6,color:'#6B8CAE'}}> 📡{dev.wifiSSID}</span>}{dev.tunnelPort&&<span style={{marginRight:6,color:'#00E676'}}> 🔌:{dev.tunnelPort}</span>}{st&&st.lastPingAgoSec!==null?<span style={{marginRight:6,color:'#00D4FF'}}>📡 {fmtAgoSec(st.lastPingAgoSec)}</span>:null}{st&&st.pingCount!==undefined?<span style={{marginRight:6,color:'#354E6A'}}>×{st.pingCount}</span>:null}</div>
+                          <FaultLines st={st}/>
                         </div>
                       </div>
                       <button onClick={()=>toggleDevice(a.id,dev.id,dev.isActive)} disabled={togglingDev===dev.id}
@@ -276,7 +359,7 @@ function AdminsTab({ sa }:{ sa:SA }) {
                         {togglingDev===dev.id?'⏳':dev.isActive?'⛔ إيقاف':'▶️ تشغيل'}
                       </button>
                     </div>
-                  ))
+                  )})
                 }
               </div>
             )}
@@ -290,13 +373,19 @@ function AdminsTab({ sa }:{ sa:SA }) {
 // ─── Cafe Stats Tab ────────────────────────────────────────────────────────
 function CafeStatsTab() {
   const [data, setData] = useState<any>(null)
+  const [statusMap, setStatusMap] = useState<Record<string,DevStatus>>({})
   const [loading, setLoading] = useState(true)
   const [expanded, setExpanded] = useState<string|null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
-    const bySrv = await rpcAll('/api/superadmin/stats')
+    // الإحصائيات + حالة اتصال الأجهزة في نفس الوقت
+    const [bySrv, devStatus] = await Promise.all([
+      rpcAll('/api/superadmin/stats'),
+      loadDevStatusAll(),
+    ])
     const srvs = SERVER_KEYS.map(k=>bySrv[k]).filter((d:any)=>d && !d.error)
+    setStatusMap(devStatus)
     setData({
       summary:{
         totalActiveSessions:srvs.reduce((s:number,d:any)=>s+(d.summary?.totalActiveSessions||0),0),
@@ -312,6 +401,11 @@ function CafeStatsTab() {
   }, [])
 
   useEffect(() => { load() }, [load])
+  // تحديث تلقائي كل 60 ثانية — الحالة دايماً محدّثة بدون ما تدوس تحديث
+  useEffect(() => {
+    const t = setInterval(()=>{ load() }, 60000)
+    return ()=>clearInterval(t)
+  }, [load])
 
   if (loading) return <div style={{textAlign:'center',padding:60,color:'#6B8CAE',fontSize:13}}>⏳ جاري التحميل...</div>
   if (!data)   return <div style={{textAlign:'center',padding:60,color:'#FF4444'}}>❌ خطأ</div>
@@ -321,6 +415,10 @@ function CafeStatsTab() {
   const totalToday   = data.todaySessions || 0
   const totalDevices = cafes.reduce((s:number,c:any)=>s+c.totalDevices,0)
   const totalUnused  = cafes.reduce((s:number,c:any)=>s+c.unusedVouchers,0)
+  // عدّاد الاتصال الحقيقي من الـ heartbeat
+  const allDevStatuses = Object.values(statusMap)
+  const onlineCount    = allDevStatuses.filter(s=>s.level==='online').length
+  const problemCount   = allDevStatuses.filter(s=>s.level==='offline'||s.level==='never').length
 
   return (
     <div>
@@ -331,6 +429,8 @@ function CafeStatsTab() {
           {icon:'📅',label:'جلسات اليوم',  val:totalToday,   color:'#00D4FF', big:true},
           {icon:'🏪',label:'الكافيهات',    val:cafes.length, color:'#818cf8'},
           {icon:'🖥️',label:'الأجهزة',     val:totalDevices, color:'#22d3ee'},
+          {icon:'🟢',label:'أجهزة متصلة',  val:`${onlineCount}/${totalDevices}`, color:'#00E676'},
+          {icon:problemCount>0?'🔴':'✅',label:'مفصولة/معطلة', val:problemCount, color:problemCount>0?'#FF4444':'#00E676'},
           {icon:'🎫',label:'كروت متاحة',  val:totalUnused,  color:'#fb923c'},
         ].map((s,i)=>(
           <div key={i} style={{...S.card,textAlign:'center',padding:14,border:s.big?`1px solid ${s.color}40`:'1px solid #1C2A40'}}>
@@ -347,6 +447,8 @@ function CafeStatsTab() {
         {cafes.map((cafe:any) => {
           const isOpen = expanded === cafe.id
           const statusColor = cafe.activeSessions > 0 ? '#00E676' : '#354E6A'
+          const cafeOnline = cafe.devices.filter((d:any)=>statusMap[d.id]?.level==='online').length
+          const cafeFaulty = cafe.devices.filter((d:any)=>['offline','never'].includes(statusMap[d.id]?.level)).length
           return (
             <div key={cafe.id} style={S.card}>
               {/* رأس الكارت */}
@@ -358,7 +460,7 @@ function CafeStatsTab() {
                       <div style={{fontSize:13,fontWeight:700,color:'#E2F0FB'}}>{cafe.name}</div>
                       <SrvBadge srv={(cafe as any).__srv}/>
                     </div>
-                    <div style={{fontSize:10,color:'#6B8CAE'}}>@{cafe.username} · {cafe.totalDevices} جهاز</div>
+                    <div style={{fontSize:10,color:'#6B8CAE'}}>@{cafe.username} · {cafe.totalDevices} جهاز · <span style={{color:cafeOnline===cafe.totalDevices&&cafe.totalDevices>0?'#00E676':cafeFaulty>0?'#FF4444':'#6B8CAE',fontWeight:700}}>🟢 {cafeOnline} متصل{cafeFaulty>0?` · 🔴 ${cafeFaulty} عطل`:''}</span></div>
                   </div>
                 </div>
                 <div style={{display:'flex',gap:16,alignItems:'center'}}>
@@ -383,16 +485,21 @@ function CafeStatsTab() {
                 <div style={{marginTop:12,paddingTop:12,borderTop:'1px solid #1C2A40'}}>
                   <div style={{fontSize:11,color:'#6B8CAE',marginBottom:8}}>الأجهزة:</div>
                   <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))',gap:8}}>
-                    {cafe.devices.map((d:any)=>(
-                      <div key={d.id} style={{background:'#070B12',border:`1px solid ${d.isActive?'#1C2A40':'#0C1420'}`,borderRadius:9,padding:'10px 12px',opacity:d.isActive?1:0.5}}>
-                        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:5}}>
+                    {cafe.devices.map((d:any)=>{
+                      const st = statusMap[d.id]
+                      return (
+                      <div key={d.id} style={{background:'#070B12',border:`1px solid ${st&&(st.level==='offline'||st.level==='never')?'rgba(255,68,68,0.35)':st?.level==='degraded'?'rgba(251,146,60,0.3)':'#1C2A40'}`,borderRadius:9,padding:'10px 12px',opacity:d.isActive?1:0.6}}>
+                        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:5,gap:6}}>
                           <span style={{fontSize:12,fontWeight:700,color:'#E2F0FB'}}>{d.name}</span>
                           <span style={{fontSize:10,fontWeight:900,color:d.activeSessions>0?'#00E676':'#354E6A'}}>●{d.activeSessions}</span>
                         </div>
+                        <div style={{marginBottom:4}}><ConnBadge st={st} small/></div>
                         {d.ssid&&<div style={{fontSize:10,color:'#6B8CAE',marginBottom:4}}>📶 {d.ssid}</div>}
+                        {st&&st.lastPingAgoSec!==null&&<div style={{fontSize:9,color:'#354E6A',marginBottom:2}}>📡 آخر تواصل {fmtAgoSec(st.lastPingAgoSec)}{st.sysUptime?` · تشغيل ${fmtUp(st.sysUptime)}`:''}</div>}
                         <div style={{fontSize:10,color:'#fb923c'}}>🎫 {d.unusedVouchers} متاح</div>
+                        <FaultLines st={st}/>
                       </div>
-                    ))}
+                    )})}
                   </div>
                 </div>
               )}
@@ -410,7 +517,9 @@ function CafeStatsTab() {
 
 function MonitorTab() {
   const [stats,setStats]=useState<StatsData|null>(null); const [loading,setLoading]=useState(true); const [selAdmin,setSelAdmin]=useState('')
-  const [devStatus,setDevStatus]=useState<Record<string,{online:boolean;reason:string}>>({}) ; const [statusLoading,setStatusLoading]=useState(false)
+  const [devStatus,setDevStatus]=useState<Record<string,DevStatus>>({}) ; const [statusLoading,setStatusLoading]=useState(false)
+  const [toggling,setToggling]=useState<string|null>(null)
+  const [lastCheck,setLastCheck]=useState<Date|null>(null)
   const load=useCallback(async()=>{
     setLoading(true)
     const q=selAdmin?`?adminId=${selAdmin}`:''
@@ -431,18 +540,41 @@ function MonitorTab() {
     } as any)
     setLoading(false)
   },[selAdmin])
-  useEffect(()=>{load()},[load])
 
-  const checkAllDevices=async()=>{
+  // فحص الاتصال الحقيقي (heartbeat من الراوتر — فوري بدون ping صناعي)
+  const checkAllDevices=useCallback(async()=>{
     setStatusLoading(true)
     try{
       const bySrv=await rpcAll(`/api/superadmin/device-status${selAdmin?`?adminId=${selAdmin}`:''}`)
-      const map:Record<string,{online:boolean;reason:string}>={}
-      SERVER_KEYS.forEach(k=>{ const d=bySrv[k]; if(d&&d.devices) d.devices.forEach((x:any)=>{map[x.deviceId]={online:x.online,reason:x.reason}}) })
+      const map:Record<string,DevStatus>={}
+      SERVER_KEYS.forEach(k=>{ const d=bySrv[k]; if(d&&d.devices) d.devices.forEach((x:any)=>{map[x.deviceId]={...x,__srv:k}}) })
       setDevStatus(map)
+      setLastCheck(new Date())
     }catch{}
     setStatusLoading(false)
+  },[selAdmin])
+
+  useEffect(()=>{load();checkAllDevices()},[load,checkAllDevices])
+  // تحديث تلقائي كل 45 ثانية — الإحصائيات + حالة الاتصال مع بعض
+  useEffect(()=>{
+    const t=setInterval(()=>{load();checkAllDevices()},45000)
+    return ()=>clearInterval(t)
+  },[load,checkAllDevices])
+
+  // توقيف/تشغيل جهاز من التاب مباشرة
+  const toggleDev=async(d:any)=>{
+    setToggling(d.id)
+    await rpc((d as any).__srv||'gamma','/api/superadmin/device-toggle',{method:'POST',body:{deviceId:d.id,isActive:!d.isActive}})
+    setToggling(null)
+    load();checkAllDevices()
   }
+
+  const statuses=Object.values(devStatus)
+  const stOnline=statuses.filter(s=>s.level==='online').length
+  const stDegraded=statuses.filter(s=>s.level==='degraded').length
+  const stOffline=statuses.filter(s=>s.level==='offline').length
+  const stNever=statuses.filter(s=>s.level==='never').length
+  const stFaulty=statuses.filter(s=>s.faults.some(f=>f.severity==='critical'||f.severity==='warning')).length
   if(loading) return <div style={{textAlign:'center',padding:60,color:'#6B8CAE'}}>⏳ جاري التحميل...</div>
   if(!stats) return <div style={{textAlign:'center',padding:60,color:'#FF4444'}}>❌ خطأ في تحميل البيانات</div>
   return (
@@ -453,12 +585,21 @@ function MonitorTab() {
             <option value="">كل الأدمنز</option>
             {stats.admins.map((a:any)=><option key={a.id} value={a.id}>{a.name} — {SERVERS[a.__srv||'gamma']?.label}</option>)}
           </select>
-          <button onClick={load} style={{...S.btn('#111B2D','#6B8CAE'),border:'1px solid #1C2A40',padding:'7px 14px',fontSize:12}}>🔄</button>
-          <button onClick={checkAllDevices} disabled={statusLoading} style={{...S.btn(statusLoading?'#1C2A40':'rgba(0,230,118,0.12)',statusLoading?'#6B8CAE':'#00E676'),border:'1px solid rgba(0,230,118,0.25)',padding:'7px 14px',fontSize:12,opacity:statusLoading?0.7:1}}>{statusLoading?'⏳ فحص...':'📡 فحص الاتصال'}</button>
+          <button onClick={()=>{load();checkAllDevices()}} style={{...S.btn('#111B2D','#6B8CAE'),border:'1px solid #1C2A40',padding:'7px 14px',fontSize:12}}>🔄</button>
+          <button onClick={checkAllDevices} disabled={statusLoading} style={{...S.btn(statusLoading?'#1C2A40':'rgba(0,230,118,0.12)',statusLoading?'#6B8CAE':'#00E676'),border:'1px solid rgba(0,230,118,0.25)',padding:'7px 14px',fontSize:12,opacity:statusLoading?0.7:1}}>{statusLoading?'⏳ فحص...':'📡 فحص الآن'}</button>
+        </div>
+        {/* شريط حالة الاتصال الحي — من heartbeat الراوتر */}
+        <div style={{display:'flex',gap:8,marginTop:10,flexWrap:'wrap',alignItems:'center'}}>
+          <span style={{fontSize:10,color:'#354E6A'}}>حالة الاتصال{lastCheck?` (آخر فحص ${lastCheck.toLocaleTimeString('ar-EG')})`:''} · تحديث تلقائي كل 45ث:</span>
+          <span style={{...S.tag(stOnline>0,'#00E676'),fontSize:10}}>🟢 {stOnline} متصل</span>
+          <span style={{...S.tag(stDegraded>0,'#fb923c'),fontSize:10}}>🟠 {stDegraded} ضعيف</span>
+          <span style={{...S.tag(stOffline>0,'#FF4444'),fontSize:10}}>🔴 {stOffline} مفصول</span>
+          <span style={{...S.tag(stNever>0,'#6B8CAE'),fontSize:10}}>⚫ {stNever} لم يتصل</span>
+          {stFaulty>0&&<span style={{...S.tag(true,'#FF4444'),fontSize:10,fontWeight:900}}>⚠️ {stFaulty} جهاز فيه عطل</span>}
         </div>
       </div>
       <div className="stats-grid-5" style={{marginBottom:14}}>
-        {[{i:'📡',l:'جلسات نشطة',v:stats.summary.totalActiveSessions,c:'#00E676'},{i:'🖥️',l:'أجهزة نشطة',v:`${stats.summary.totalActiveDevices}/${stats.summary.totalDevices}`,c:'#00D4FF'},{i:'⬇️',l:'تنزيل',v:fmtMB(stats.summary.totalDataInMB),c:'#22d3ee'},{i:'⬆️',l:'رفع',v:fmtMB(stats.summary.totalDataOutMB),c:'#4ade80'},{i:'📊',l:'إجمالي',v:fmtMB(stats.summary.totalDataInMB+stats.summary.totalDataOutMB),c:'#fb923c'}].map((s,i)=>(
+        {[{i:'📡',l:'جلسات نشطة',v:stats.summary.totalActiveSessions,c:'#00E676'},{i:'🟢',l:'أجهزة متصلة الآن',v:`${stOnline}/${stats.summary.totalDevices}`,c:stOnline>0?'#00E676':'#354E6A'},{i:'⬇️',l:'تنزيل (كل الجلسات)',v:fmtMB(stats.summary.totalDataInMB),c:'#22d3ee'},{i:'⬆️',l:'رفع (كل الجلسات)',v:fmtMB(stats.summary.totalDataOutMB),c:'#4ade80'},{i:'🖥️',l:'أجهزة مفعّلة',v:`${stats.summary.totalActiveDevices}/${stats.summary.totalDevices}`,c:'#00D4FF'}].map((s,i)=>(
           <div key={i} style={{...S.card,textAlign:'center',padding:12}}><div style={{fontSize:18,marginBottom:3}}>{s.i}</div><div style={{fontSize:14,fontWeight:900,color:s.c}}>{s.v}</div><div style={{fontSize:9,color:'#354E6A',marginTop:2}}>{s.l}</div></div>
         ))}
       </div>
@@ -466,25 +607,36 @@ function MonitorTab() {
         <div style={S.card}>
           <h3 style={{fontSize:12,fontWeight:700,color:'#E2F0FB',marginBottom:12}}>🖥️ الأجهزة</h3>
           <div style={{display:'flex',flexDirection:'column',gap:7}}>
-            {stats.devices.length===0?<div style={{textAlign:'center',color:'#6B8CAE',padding:20,fontSize:12}}>لا يوجد</div>:stats.devices.map((d:any)=>(
-              <div key={d.id} style={{background:'#070B12',border:'1px solid #1C2A40',borderRadius:9,padding:'9px 11px'}}>
-                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:5}}>
-                  <span style={{fontSize:12,fontWeight:700,color:d.isActive?'#E2F0FB':'#354E6A'}}>{d.name}</span>
-                  <SrvBadge srv={d.__srv}/>
+            {stats.devices.length===0?<div style={{textAlign:'center',color:'#6B8CAE',padding:20,fontSize:12}}>لا يوجد</div>:stats.devices.map((d:any)=>{
+              const st=devStatus[d.id]
+              const isBad=st&&(st.level==='offline'||st.level==='never')
+              return (
+              <div key={d.id} style={{background:'#070B12',border:`1px solid ${isBad?'rgba(255,68,68,0.35)':st?.level==='degraded'?'rgba(251,146,60,0.3)':'#1C2A40'}`,borderRadius:9,padding:'9px 11px'}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:5,gap:6,flexWrap:'wrap'}}>
+                  <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap',minWidth:0}}>
+                    <span style={{fontSize:12,fontWeight:700,color:d.isActive?'#E2F0FB':'#354E6A'}}>{d.name}</span>
+                    <SrvBadge srv={d.__srv}/>
+                    <ConnBadge st={st} small/>
+                  </div>
                   <div style={{display:'flex',gap:4,alignItems:'center',flexWrap:'wrap'}}>
-                    <span style={S.tag(d.isActive,'#00E676')}>{d.isActive?'● نشط DB':'○ DB'}</span>
-                    {devStatus[d.id]&&(
-                      <span style={{...S.tag(devStatus[d.id].online,'#00D4FF'),fontSize:9}} title={devStatus[d.id].reason}>
-                        {devStatus[d.id].online?'🟢 متصل':'🔴 مفصول'}
-                      </span>
-                    )}
+                    <span style={S.tag(d.isActive,'#00E676')}>{d.isActive?'● مفعّل':'○ موقوف'}</span>
+                    <button onClick={()=>toggleDev(d)} disabled={toggling===d.id}
+                      style={{padding:'3px 9px',borderRadius:6,border:'none',cursor:'pointer',fontSize:10,fontWeight:700,fontFamily:'Cairo,sans-serif',opacity:toggling===d.id?0.6:1,background:d.isActive?'rgba(255,68,68,0.1)':'rgba(0,230,118,0.1)',color:d.isActive?'#FF4444':'#00E676'}}>
+                      {toggling===d.id?'⏳':d.isActive?'⛔ إيقاف':'▶️ تشغيل'}
+                    </button>
                   </div>
                 </div>
-                {devStatus[d.id]&&(
-                  <div style={{fontSize:9,color:devStatus[d.id].online?'#00E676':'#FF6666',marginBottom:4,fontStyle:'italic'}}>{devStatus[d.id].reason}</div>
-                )}
-                <div style={{display:'flex',gap:10,fontSize:10,flexWrap:'wrap'}}>
-                  <span style={{color:'#00E676'}}>📡 {d._count.sessions}</span>
+                <div style={{display:'flex',gap:10,fontSize:9,flexWrap:'wrap',marginBottom:3}}>
+                  <span style={{color:st&&st.lastPingAgoSec!==null&&st.lastPingAgoSec<=180?'#00E676':isBad?'#FF6666':'#6B8CAE'}}>📡 آخر ping {st?fmtAgoSec(st.lastPingAgoSec):'—'}</span>
+                  <span style={{color:'#6B8CAE'}}>⏱️ تشغيل {st?fmtUp(st.sysUptime):'—'}</span>
+                  <span style={{color:'#6B8CAE'}}>💾 ذاكرة {st?fmtMem(st.sysMemfree):'—'}</span>
+                  {st&&st.sysLoad!==null&&st.sysLoad!==undefined&&<span style={{color:(st.sysLoad||0)>3000?'#fb923c':'#6B8CAE'}}>⚙️ حمل {((st.sysLoad||0)/1000).toFixed(1)}</span>}
+                  {st&&st.activeSessions!==undefined&&<span style={{color:'#00D4FF'}}>👥 {st.activeSessions} جلسة</span>}
+                  {st&&st.pingCount!==undefined&&st.pingCount>0&&<span style={{color:'#354E6A'}}>×{st.pingCount} ping</span>}
+                </div>
+                <FaultLines st={st}/>
+                <div style={{display:'flex',gap:10,fontSize:10,flexWrap:'wrap',marginTop:3}}>
+                  <span style={{color:'#00E676'}}>🎫 {d._count.sessions}</span>
                   <span style={{color:'#00D4FF'}}>🎫 {d._count.vouchers}</span>
                   {d.wifiSSID&&<span style={{color:'#6B8CAE'}}>📶 {d.wifiSSID}</span>}
                   {d.tunnelPort&&<span style={{color:'#818cf8',fontFamily:'monospace'}}>🔑 :{d.tunnelPort}</span>}
@@ -500,7 +652,7 @@ function MonitorTab() {
                   <div style={{marginTop:4,fontSize:9,color:'#354E6A',fontStyle:'italic'}}>⏳ SSH Key لسه ما اتسجلش — سطّب الراوتر</div>
                 )}
               </div>
-            ))}
+            )})}
           </div>
         </div>
         <div style={S.card}>

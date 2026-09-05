@@ -92,6 +92,15 @@ model Device {
   // صفحة البورتال المخصصة (HTML خالص)
   portalHtml    String?
 
+  // ─── Heartbeat: آخر تواصل حقيقي من الراوتر (يُحدّث من /api/wifidog/ping كل CheckInterval) ───
+  lastPingAt     DateTime? // آخر ping وصل من الراوتر
+  lastPingIp     String?   // IP الراوتر العام وقت آخر ping
+  sysUptime      Int?      // ثواني — مدة تشغيل الراوتر كله
+  sysMemfree     Int?      // KB — الذاكرة الحرة على الراوتر
+  sysLoad        Int?      // حمل المعالج (كما يرسله wifidog)
+  wifidogUptime  Int?      // ثواني — مدة تشغيل خدمة wifidog (لو قليلة = الخدمة اتعاد تشغيلها)
+  pingCount      Int       @default(0) // إجمالي عدد الـ pings المستلمة
+
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
