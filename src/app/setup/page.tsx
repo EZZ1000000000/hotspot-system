@@ -382,37 +382,8 @@ function MigrateDialog({ fleet, sourceServer, admin, onClose, onMigrated }: {
   )
 }
 
-/* ════════════════════════════ شاشة الدخول ════════════════════════════ */
-function LoginScreen({ onLogin }: { onLogin: () => void }) {
-  const [pass, setPass] = useState('')
-  const [err,  setErr]  = useState('')
-  const PASS = process.env.NEXT_PUBLIC_SETUP_PASS || 'setup@2024'
-  const check = () => { if (pass === PASS) onLogin(); else setErr('كلمة المرور خاطئة') }
-  return (
-    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#070B12', fontFamily: 'Cairo,sans-serif', direction: 'rtl' }}>
-      <div style={{ ...S.card, width: 360 }}>
-        <div style={{ textAlign: 'center', marginBottom: 24 }}>
-          <div style={{ fontSize: 48 }}>📜</div>
-          <h1 style={{ fontSize: 20, fontWeight: 900, color: '#00D4FF', margin: '8px 0 0' }}>سكريبتات الإعداد</h1>
-          <p style={{ fontSize: 12, color: '#354E6A', marginTop: 6 }}>كل السيرفرات + سكربتات كل الأجهزة + تبديل السيرفرات</p>
-        </div>
-        <label style={S.label}>كلمة المرور</label>
-        <input style={{ ...S.input, marginBottom: 12 }} type="password"
-          value={pass} onChange={e => { setPass(e.target.value); setErr('') }}
-          onKeyDown={e => e.key === 'Enter' && check()} autoFocus placeholder="••••••••" />
-        {err && <div style={{ color: '#f87171', fontSize: 12, marginBottom: 10, textAlign: 'center' }}>⚠️ {err}</div>}
-        <button style={{ ...S.btn(), width: '100%', justifyContent: 'center', padding: 12 }} onClick={check}>دخول</button>
-        <p style={{ textAlign: 'center', marginTop: 10, fontSize: 11, color: '#354E6A' }}>
-          الباسورد: <code style={{ color: '#6B8CAE' }}>setup@2024</code>
-        </p>
-      </div>
-    </div>
-  )
-}
-
 /* ════════════════════════════ الصفحة الرئيسية ════════════════════════════ */
 export default function SetupPage() {
-  const [authed,   setAuthed]   = useState(false)
   const [fleet,    setFleet]    = useState<Fleet | null>(null)
   const [fleetErr, setFleetErr] = useState('')
   const [loading,  setLoading]  = useState(false)
@@ -440,7 +411,8 @@ export default function SetupPage() {
     setLoading(false)
   }, [])
 
-  const handleLogin = () => { setAuthed(true); loadFleet() }
+  // تحميل بيانات السيرفرات تلقائيًا عند فتح الصفحة — بدون أي شاشة دخول
+  useEffect(() => { loadFleet() }, [loadFleet])
 
   // الاختيار الحالي
   const selServer = fleet?.servers.find(s => s.key === sel?.serverKey)
@@ -450,8 +422,6 @@ export default function SetupPage() {
   const allTunnels = (fleet?.servers || []).flatMap(sv =>
     sv.admins.flatMap(a => (a.devices || []).map(d => ({ gw: d.gatewayId, port: d.tunnelPort, serverKey: sv.key })))
   ).filter((t): t is { gw: string; port: number; serverKey: string } => !!t.port)
-
-  if (!authed) return <LoginScreen onLogin={handleLogin} />
 
   return (
     <div style={{ minHeight: '100vh', background: '#070B12', fontFamily: 'Cairo,sans-serif', direction: 'rtl' }}>
@@ -482,8 +452,6 @@ export default function SetupPage() {
           <button onClick={loadFleet} disabled={loading} style={{ ...S.btn('#111B2D', '#6B8CAE'), border: '1px solid #1C2A40', fontSize: 11, padding: '6px 12px' }}>
             {loading ? '⏳' : '🔄'} تحديث
           </button>
-          <button style={{ ...S.btn('#1C2A40', '#f87171'), border: '1px solid rgba(248,113,113,0.3)', fontSize: 11, padding: '6px 12px' }}
-            onClick={() => setAuthed(false)}>خروج</button>
         </div>
       </div>
 
