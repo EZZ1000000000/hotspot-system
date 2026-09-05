@@ -19,6 +19,7 @@ const fmtMB   = (mb:number)  => mb>=1024?(mb/1024).toFixed(2)+' GB':mb.toFixed(1
 const fmtTime = (min:number) => min>=60?Math.floor(min/60)+'س '+(min%60?Math.round(min%60)+'د':''):Math.round(min)+'د'
 
 const TABS = [
+  { key:'allservers',  icon:'🌍', label:'كل السيرفرات' },
   { key:'admins',      icon:'👤', label:'الأدمنز' },
   { key:'cafestats',   icon:'📊', label:'إحصائيات الكافيهات' },
   { key:'monitor',     icon:'📡', label:'المراقبة' },
@@ -2504,9 +2505,112 @@ function LogsTab() {
   )
 }
 
+// ─── كل السيرفرات: عرض كل الكافيهات من كل النشرات في مكان واحد ──────────────
+type AggAdmin = { id:string; name:string; username:string; isActive:boolean; totalVouchersGenerated:number; _count?:{devices:number;vouchers:number} }
+type AggServer = { key:string; label:string; url:string; ok:boolean; self:boolean; error?:string|null; admins:AggAdmin[] }
+
+function AllServersTab() {
+  const [servers,setServers]=useState<AggServer[]|null>(null)
+  const [total,setTotal]=useState(0)
+  const [fetchedAt,setFetchedAt]=useState('')
+  const [loading,setLoading]=useState(true)
+  const [notAvailable,setNotAvailable]=useState(false)
+
+  const load=useCallback(async()=>{
+    setLoading(true); setNotAvailable(false)
+    try{
+      const r=await fetch('/api/superadmin/aggregate')
+      if(!r.ok){ setNotAvailable(true); setServers(null) } 
+      else{
+        const d=await r.json()
+        setServers(d.servers||[]); setTotal(d.totalCafes||0)
+        setFetchedAt(d.fetchedAt?new Date(d.fetchedAt).toLocaleTimeString('ar-EG'):'')
+      }
+    }catch{ setNotAvailable(true); setServers(null) }
+    setLoading(false)
+  },[])
+  useEffect(()=>{ load() },[load])
+
+  if(loading) return <div style={{textAlign:'center',padding:60,color:'#6B8CAE'}}>⏳ جاري جمع الكافيهات من كل السيرفرات...</div>
+
+  if(notAvailable) return (
+    <div style={{...S.card,textAlign:'center',padding:40,color:'#6B8CAE'}}>
+      <div style={{fontSize:40,marginBottom:10}}>🌍</div>
+      <div style={{fontSize:14,fontWeight:700,color:'#E2F0FB',marginBottom:6}}>الميزة دي متاحة على السيرفر الرئيسي بس</div>
+      <div style={{fontSize:12}}>افتح لوحة السوبر أدمن على: <code style={{color:'#00D4FF'}}>https://hotspot-system-gamma.vercel.app/superadmin</code></div>
+    </div>
+  )
+
+  return (
+    <div>
+      {/* ملخص عام */}
+      <div style={{...S.card,marginBottom:12,display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:10}}>
+        <div style={{display:'flex',gap:14,alignItems:'center',flexWrap:'wrap'}}>
+          <div style={{fontSize:16,fontWeight:800,color:'#E2F0FB'}}>🌍 كل الكافيهات على كل السيرفرات</div>
+          <span style={S.tag(true)}>{total} كافيه</span>
+          <span style={S.tag(true,'#00E676')}>{servers?.filter(s=>s.ok).length||0}/{servers?.length||0} سيرفر متصل</span>
+          {fetchedAt&&<span style={{fontSize:10,color:'#354E6A'}}>آخر تحديث: {fetchedAt}</span>}
+        </div>
+        <button onClick={load} style={{...S.btn('#111B2D','#6B8CAE'),border:'1px solid #1C2A40',fontSize:11,padding:'7px 14px'}}>🔄 تحديث</button>
+      </div>
+
+      {servers&&servers.map(sv=>(
+        <div key={sv.key} style={{...S.card,marginBottom:14,padding:0,overflow:'hidden'}}>
+          {/* هيدر السيرفر */}
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8,padding:'11px 16px',background:sv.ok?'rgba(0,136,204,0.06)':'rgba(255,68,68,0.06)',borderBottom:'1px solid #1C2A40'}}>
+            <div style={{display:'flex',gap:9,alignItems:'center',flexWrap:'wrap'}}>
+              <span style={{fontSize:15}}>{sv.ok?'✅':'❌'}</span>
+              <span style={{fontSize:13,fontWeight:800,color:sv.ok?'#00D4FF':'#FF4444'}}>{sv.label}</span>
+              {sv.self&&<span style={S.tag(true,'#fb923c')}>السيرفر ده</span>}
+              <span style={{fontSize:10,color:'#354E6A',fontFamily:'monospace',direction:'ltr'}}>{sv.url.replace('https://','')}</span>
+              <span style={S.tag(sv.ok,'#00E676')}>{sv.admins.length} كافيه</span>
+            </div>
+            <a href={`${sv.url}/superadmin`} target="_blank" rel="noreferrer" style={{...S.btn('#111B2D','#6B8CAE'),textDecoration:'none',border:'1px solid #1C2A40',fontSize:10,padding:'5px 10px'}}>فتح لوحة السيرفر ↗</a>
+          </div>
+
+          {!sv.ok ? (
+            <div style={{padding:16,color:'#FF4444',fontSize:12}}>⚠️ السيرفر مش متاح حالياً — {sv.error}</div>
+          ) : sv.admins.length===0 ? (
+            <div style={{padding:16,color:'#354E6A',fontSize:12,textAlign:'center'}}>مفيش كافيهات على السيرفر ده</div>
+          ) : (
+            <div style={{overflowX:'auto'}}>
+              <table style={{width:'100%',borderCollapse:'collapse',fontSize:12,direction:'rtl'}}>
+                <thead>
+                  <tr style={{background:'#070B12',borderBottom:'1px solid #1C2A40'}}>
+                    {['الكافيه','اليوزر','الحالة','أجهزة','كروت','إجمالي المولد','اللوحة'].map(h=>(
+                      <th key={h} style={{padding:'8px 12px',color:'#6B8CAE',fontWeight:600,textAlign:'right',fontSize:11,whiteSpace:'nowrap'}}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {sv.admins.map((a)=>(
+                    <tr key={a.id} style={{borderBottom:'1px solid #0C1420'}}>
+                      <td style={{padding:'8px 12px',color:'#E2F0FB',fontWeight:700,fontSize:12}}>{a.name}</td>
+                      <td style={{padding:'8px 12px',color:'#6B8CAE',fontFamily:'monospace',fontSize:11,direction:'ltr',textAlign:'right'}}>@{a.username}</td>
+                      <td style={{padding:'8px 12px'}}><span style={S.tag(a.isActive,a.isActive?'#00E676':'#FF4444')}>{a.isActive?'نشط':'موقوف'}</span></td>
+                      <td style={{padding:'8px 12px',color:'#00D4FF',fontWeight:700}}>{a._count?.devices??0}</td>
+                      <td style={{padding:'8px 12px',color:'#00D4FF',fontWeight:700}}>{a._count?.vouchers??0}</td>
+                      <td style={{padding:'8px 12px',color:'#6B8CAE'}}>{(a.totalVouchersGenerated||0).toLocaleString('ar-EG')}</td>
+                      <td style={{padding:'8px 12px'}}><a href={`${sv.url}/dashboard`} target="_blank" rel="noreferrer" style={{color:'#0088CC',fontSize:11,textDecoration:'none'}}>فتح ↗</a></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      ))}
+
+      <div style={{fontSize:11,color:'#354E6A',padding:'4px 6px',lineHeight:1.8}}>
+        ℹ️ كل سيرفر ليه قاعدة بيانات لوحدها (لتوزيع الطاقة المجانية) — الكروت بتشتغل على سيرفر الكافيه اللي هي مسجل عليه، والراوتر بيتصل بسيرفره.
+      </div>
+    </div>
+  )
+}
+
 export default function SuperAdminPage() {
   const [sa,setSA]=useState<SA|null>(null)
-  const [tab,setTab]=useState('admins')
+  const [tab,setTab]=useState('allservers')
   const [sideOpen,setSideOpen]=useState(false)
 
   if(!sa) return <LoginScreen onLogin={setSA}/>
@@ -2547,6 +2651,7 @@ export default function SuperAdminPage() {
 
         {/* Content */}
         <div className="app-content">
+          {tab==='allservers'&& <AllServersTab />}
           {tab==='admins'    && <AdminsTab    sa={sa}/>}
           {tab==='cafestats' && <CafeStatsTab />}
           {tab==='monitor'   && <MonitorTab />}
