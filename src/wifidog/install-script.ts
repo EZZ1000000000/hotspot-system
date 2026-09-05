@@ -12,7 +12,7 @@
 //         wifidog مش بيتكلم TLS 1.2 → الجسر بيستقبل طلباته محلياً
 //         ويمررها للسيرفر عبر HTTPS، وبيعالج الـ trailing slash
 //         اللي wifidog 1.3.0 بيضيفه (/api/wifidog/auth/?stage=...)
-//   [4/9] كتابة /etc/wifidog.conf الإعداد الصحيح (الراوتر ← الجسر)
+//   [4/9] كتابة /etc/wifidog.conf الإعداد الصحيح (الراوتر ← الجسر) بكشف تلقائي للواجهات
 //   [5/9] تغيير اسم الشبكة على كل واجهات AP (2.4GHz + 5GHz)
 //   [6/9] أوامر إدارة: hotspot-status / hotspot-ssid / hotspot-restart
 //         / hotspot-test (اختبار الاتصال بالسيرفر في أي وقت)
@@ -315,16 +315,39 @@ netstat -tln 2>/dev/null | grep -q ":$UPORT " \\
 # [4/9] كتابة /etc/wifidog.conf — الإعداد الصحيح
 #  wifidog ←(HTTP)→ الجسر المحلي ←(HTTPS)→ السيرفر
 # ────────────────────────────────────────────────
-say "[4/9] كتابة إعدادات wifidog..."
+say "[4/9] كتابة إعدادات wifidog (بكشف تلقائي للواجهات والعناوين)..."
 cp /etc/wifidog.conf /etc/wifidog.conf.bak 2>/dev/null
+# ── كشف تلقائي: عنوان الراوتر على شبكة الكافيه (مش مكتوب يدوي — أي راوتر هيشتغل)
+GWIP=$(uci -q get network.lan.ipaddr 2>/dev/null)
+[ -z "$GWIP" ] && GWIP=$(ip -4 addr show br-lan 2>/dev/null | awk '/inet /{split($2,a,"/"); print a[1]; exit}')
+[ -z "$GWIP" ] && GWIP='${routerIp}'
+# ── كشف تلقائي: واجهة الشبكة الداخلية
+GWIF=$(uci -q get network.lan.device 2>/dev/null)
+if [ -n "$GWIF" ] && ! ip link show "$GWIF" >/dev/null 2>&1; then GWIF=''; fi
+[ -z "$GWIF" ] && GWIF=$(uci -q get network.lan.ifname 2>/dev/null | awk '{print $1}')
+[ -z "$GWIF" ] && ip link show br-lan >/dev/null 2>&1 && GWIF=br-lan
+[ -z "$GWIF" ] && GWIF='${gwIf}'
+# ── كشف تلقائي: واجهة الإنترنت (مخرج المسار الافتراضي) — أهم حاجة
+EXTIF=$(ip -4 route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+if [ -n "$EXTIF" ] && ! ip link show "$EXTIF" >/dev/null 2>&1; then EXTIF=''; fi
+if [ -z "$EXTIF" ] || [ "$EXTIF" = "$GWIF" ] || echo "$EXTIF" | grep -q '^br-'; then
+  EXTIF=''
+  for CAND in '${extIf}' $(uci -q get network.wan.device 2>/dev/null) $(uci -q get network.wan.ifname 2>/dev/null) pppoe-wan eth0.1 eth1 eth0; do
+    [ -z "$CAND" ] && continue
+    echo "$CAND" | grep -q '^br-' && continue
+    if ip link show "$CAND" >/dev/null 2>&1; then EXTIF="$CAND"; break; fi
+  done
+fi
+[ -z "$EXTIF" ] && EXTIF='${extIf}'
+echo "   🌐 واجهة الإنترنت: $EXTIF | واجهة الشبكة: $GWIF | عنوان الراوتر: $GWIP"
 cat > /etc/wifidog.conf << WDEOF
 GatewayID           ${gwId}
-GatewayAddress      ${routerIp}
-ExternalInterface   ${extIf}
-GatewayInterface    ${gwIf}
+GatewayAddress      __GWIP__
+ExternalInterface   __EXTIF__
+GatewayInterface    __GWIF__
 
 AuthServer {
-    Hostname        ${routerIp}
+    Hostname        __GWIP__
     HTTPPort        __UPORT__
     SSLAvailable    no
     Path            /cgi-bin/go?ep=/
@@ -356,7 +379,7 @@ FirewallRuleSet locked-users {
     FirewallRule block to 0.0.0.0/0
 }
 WDEOF
-sed -i "s/__UPORT__/$UPORT/" /etc/wifidog.conf
+sed -i "s/__UPORT__/$UPORT/; s/__GWIP__/$GWIP/g; s/__EXTIF__/$EXTIF/g; s/__GWIF__/$GWIF/g" /etc/wifidog.conf
 echo "✅ wifidog.conf اتكتبت (القديمة محفوظة في /etc/wifidog.conf.bak)"
 
 # ────────────────────────────────────────────────
@@ -670,6 +693,18 @@ say "[9/9] تشغيل الخدمات + الاختبار النهائي..."
 /etc/init.d/wifidog enable >/dev/null 2>&1
 /etc/init.d/wifidog restart >/dev/null 2>&1 || /etc/init.d/wifidog start >/dev/null 2>&1
 sleep 4
+if ! pgrep wifidog >/dev/null 2>&1; then
+  echo "⚠️  wifidog ماشتالش من أول محاولة — بجرب تاني واطلع السبب..."
+  logread 2>/dev/null | grep -i wifidog | tail -n 6 | sed 's/^/     /'
+  /etc/init.d/wifidog restart >/dev/null 2>&1 || /etc/init.d/wifidog start >/dev/null 2>&1
+  sleep 4
+fi
+if pgrep wifidog >/dev/null 2>&1; then
+  echo "✅ wifidog شغال"
+else
+  echo "❌ wifidog مش راضي يشتغل — دي آخر رسايل الراوتر (ابعت صورة منها للدعم):"
+  logread 2>/dev/null | tail -n 20 | sed 's/^/     /'
+fi
 
 hotspot-test
 
@@ -681,6 +716,13 @@ if wget -q -T 60 -O /dev/null "http://127.0.0.1:$UPORT/cgi-bin/go?ep=/portal/" 2
   echo "✅ صفحة الدخول متحمّلة محلياً — هتظهر للموبايل فوراً"
 else
   echo "⚠️  الصفحة هتتحمّل تلقائياً أول ما موبايل يفتح البورتال (أو بعد 5 دقايق بالكرون)"
+fi
+
+# تسجيل فوري في السيرفر — الحالة أونلاين في لوحة التحكم خلال ثواني (مش مستنيين 5 دقايق)
+if wget -q -T 20 -O /dev/null "http://127.0.0.1:$UPORT/cgi-bin/go?ep=/ping/?gw_id=$GW_ID&sys_uptime=1&sys_memfree=1&sys_load=1&wifidog_uptime=1" 2>/dev/null; then
+  echo "✅ الجهاز اتسجل في السيرفر — هتلاقي حالته أونلاين في لوحة التحكم حالاً"
+else
+  echo "⚠️  التسجيل الفوري مانجحش — أول نبضة تلقائية من wifidog هتسجله خلال 5 دقايق"
 fi
 
 echo ""
