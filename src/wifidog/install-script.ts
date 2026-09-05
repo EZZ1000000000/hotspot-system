@@ -145,23 +145,36 @@ say "[3/9] تركيب جسر HTTPS المحلي..."
 mkdir -p /www/cgi-bin
 cat > /www/cgi-bin/go << 'BRIDGE_EOF'
 #!/bin/sh
-# جسر HTTPS — بيمرر طلبات wifidog للسيرفر عبر HTTPS
+# ═══════════════════════════════════════════════════════
+# جسر HTTPS الشامل — كل حاجة بتعدي من هنا:
+#  • wifidog (ping/auth) → HTTPS → السيرفر
+#  • متصفح الموبايل (صفحة الدخول + تسجيل الدخول) → الراوتر → HTTPS → السيرفر
+#    يعني الموبايل مش محتاج يوصّل السيرفر نهائياً قبل التفعيل!
+# ═══════════════════════════════════════════════════════
 SRV="${serverHost}"
+GW="${gwId}"
 
 https_get(){
   uclient-fetch -q -T 20 -O - --no-check-certificate "$1" 2>>/tmp/hotspot_https.log \\
     || wget -q -T 20 -O - --no-check-certificate "$1" 2>>/tmp/hotspot_https.log
 }
+https_post(){
+  uclient-fetch -q -T 20 -O - --no-check-certificate --post-data="$2" "$1" 2>>/tmp/hotspot_https.log \\
+    || wget -q -T 20 -O - --no-check-certificate --post-data="$2" "$1" 2>>/tmp/hotspot_https.log
+}
 
 QS="$QUERY_STRING"
 [ -z "$QS" ] && QS="ep=/ping/?"
 ALL="\${QS#ep=}"
+# EP ممكن يتقفل بعلامة ؟ (أسلوب wifidog: ep=/login/?params) أو & (الأسلوب النضيف: ep=/portal/&params)
 case "$ALL" in
   *\\?*) EP="\${ALL%%\\?*}"; REST="\${ALL#*\\?}" ;;
-  *)    EP="$ALL"; REST="" ;;
+  *\\&*) EP="\${ALL%%&*}";  REST="\${ALL#*&}" ;;
+  *)     EP="$ALL"; REST="" ;;
 esac
 EP="\${EP#/}"
 EP="\${EP%/}"   # شيل الـ trailing slash اللي wifidog بيضيفها (auth/ ← auth)
+
 case "$EP" in
   ping|auth)
     # طلبات داخلية من wifidog نفسه — نمرر رد السيرفر الخام
@@ -188,11 +201,52 @@ case "$EP" in
       echo "BRIDGE_FAIL"
     fi
     ;;
-  *)
-    # طلب من متصفح موبايل — تحويل مباشر لصفحة الدخول على السيرفر
+  login)
+    # wifidog حوّل متصفح الموبايل هنا — نعيد توجيهه لصفحة البورتال المحلية
+    # بنفس البراميترز بس بصيغة استعلام نضيفة عشان الصفحة تقراها صح
+    echo "Location: /cgi-bin/go?ep=/portal/&\${REST}"
+    echo ""
+    ;;
+  portal)
+    # صفحة الدخول — بنجيبها من السيرفر ونخدمها من الراوتر نفسه
+    RESP=$(https_get "https://\${SRV}/api/portal/page?gw_id=\${GW}")
     echo "Content-Type: text/html"
     echo ""
-    echo "<!DOCTYPE html><html><head><meta charset='utf-8'><meta http-equiv='refresh' content='0;url=https://\${SRV}/api/wifidog/\${EP}?\${REST}'></head><body style='font-family:sans-serif;text-align:center;padding:40px;background:#070B12;color:#00D4FF'>جاري فتح صفحة الدخول...</body></html>"
+    if [ -n "$RESP" ]; then
+      # تعديل نقطتين في الصفحة:
+      #  1) تسجيل الدخول يروح للجسر المحلي بدل السيرفر (الموبايل مش واصل السيرفر أصلاً)
+      #  2) زرار صفحة الجلسة يتعامل مع السيرفر مباشرة (بعد التفعيل الموبايل يبقى مسموح له)
+      printf '%s' "$RESP" | sed "s|fetch('/api/portal/login'|fetch('/cgi-bin/go?ep=/apilogin/'|; s|window.location.replace('/session?token='|window.location.replace('https://\${SRV}/session?token='|"
+    else
+      echo "<!DOCTYPE html><html dir='rtl'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'></head><body style='font-family:sans-serif;background:#070B12;color:#00D4FF;text-align:center;padding:60px 20px'><h2>📡 مشكلة اتصال مؤقتة</h2><p style='color:#6B8CAE'>اسحب الصفحة لتحديث، أو انتظر ثانية وجرّب تاني</p></body></html>"
+    fi
+    ;;
+  apilogin)
+    # طلب تسجيل الدخول من صفحة البورتال — بنمرر الجسم للسيرفر زي ما هو
+    BODY=""
+    if [ "\$REQUEST_METHOD" = "POST" ] && [ -n "\$CONTENT_LENGTH" ]; then
+      BODY=\$(head -c "\$CONTENT_LENGTH" 2>/dev/null)
+    fi
+    RESP=\$(https_post "https://\${SRV}/api/portal/login" "\$BODY")
+    echo "Content-Type: application/json"
+    echo ""
+    if [ -n "\$RESP" ]; then
+      printf '%s' "\$RESP"
+    else
+      echo '{"success":false,"message":"مشكلة اتصال بالسيرفر — جرب تاني"}'
+    fi
+    ;;
+  gw_message.php|gw_message)
+    # رسايل wifidog (مرفوض/منتهي) — من السيرفر
+    RESP=$(https_get "https://\${SRV}/api/wifidog/gw_message.php?\${REST}")
+    echo "Content-Type: text/html"
+    echo ""
+    printf '%s' "\$RESP"
+    ;;
+  *)
+    # أي طلب تاني من متصفح → وديره لصفحة البورتال
+    echo "Location: /cgi-bin/go?ep=/portal/&gw_id=\${GW}"
+    echo ""
     ;;
 esac
 BRIDGE_EOF
@@ -363,6 +417,17 @@ else
   echo "❌ 3) مسار التحقق من الكروت (auth): رجعت حاجة غير متوقعة (رجعت: \${T3:-لا شيء})"
 fi
 
+# 3b) صفحة الدخول اللي الموبايل بيفتحها — لازم تيجي من الجسر كاملة
+T6=$(wget -q -T 20 -O - "http://127.0.0.1:\$UPORT/cgi-bin/go?ep=/portal/" 2>/dev/null)
+T6OK=0
+case "$T6" in *doLogin*) T6OK=1 ;; esac
+if [ "$T6OK" = "1" ]; then
+    echo "✅ 3b) صفحة الدخول (بورتال الموبايل): تمام — بتتخدم محلياً من الراوتر"
+else
+    echo "❌ 3b) صفحة الدخول (بورتال الموبايل): فشل (رجعت: \${T6:-لا شيء})"
+    echo "   → غالباً نفس سبب رقم 1 — الراوتر مش واصل السيرفر"
+fi
+
 if pgrep wifidog >/dev/null 2>&1; then
   echo "✅ 4) خدمة wifidog: شغالة"
 else
@@ -376,7 +441,7 @@ else
 fi
 
 echo "──────────────────────────────────────────"
-if [ "$T2" = "Pong" ] && [ "$T3" = "Auth: 0" ] && pgrep wifidog >/dev/null 2>&1; then
+if [ "$T2" = "Pong" ] && [ "$T3" = "Auth: 0" ] && [ "$T6OK" = "1" ] && pgrep wifidog >/dev/null 2>&1; then
   echo "🎉 النتيجة: كل حاجة تمام — التفعيل هيشتغل من أول كارت"
 else
   echo "⚠️  النتيجة: فيه مشكلة — ابعت سكرين من الرسائل دي للدعم الفني"
