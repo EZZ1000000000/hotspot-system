@@ -202,23 +202,46 @@ case "$EP" in
     fi
     ;;
   login)
-    # wifidog حوّل متصفح الموبايل هنا — نعيد توجيهه لصفحة البورتال المحلية
-    # بنفس البراميترز بس بصيغة استعلام نضيفة عشان الصفحة تقراها صح
-    echo "Location: /cgi-bin/go?ep=/portal/&\${REST}"
+    # wifidog حوّل متصفح الموبايل هنا — بنحوّله لصفحة البورتال المحلية
+    # 3 طبقات حماية عشان مستحيل تطلع صفحة بيضا:
+    #   1) Status: 302 + Location مطلق (المتصفح يتابعها فوراً)
+    #   2) meta refresh في HTML (لو المتصفح تجاهل الـ 302)
+    #   3) لينك يدوي (آخر ملجأ — المستخدم يضغط بنفسه)
+    GO="/cgi-bin/go?ep=/portal/&\${REST}"
+    echo "Status: 302 Found"
+    echo "Location: http://\${HTTP_HOST:-${routerIp}}$GO"
+    echo "Content-Type: text/html; charset=utf-8"
     echo ""
+    echo "<!DOCTYPE html><html dir='rtl'><head><meta charset='utf-8'><meta http-equiv='refresh' content='0;url=$GO'></head><body style='font-family:sans-serif;background:#070B12;color:#00D4FF;text-align:center;padding:60px 20px'><p>جاري فتح صفحة الدخول...</p><p><a href='$GO' style='color:#00D4FF'>اضغط هنا لو الصفحة مافتحتش</a></p></body></html>"
     ;;
   portal)
-    # صفحة الدخول — بنجيبها من السيرفر ونخدمها من الراوتر نفسه
-    RESP=$(https_get "https://\${SRV}/api/portal/page?gw_id=\${GW}")
-    echo "Content-Type: text/html"
+    # صفحة الدخول — بتتخدم من كاش الراوتر (فورية 100%)
+    # بتتحدث من السيرفر كل 5 دقايق (الكرون) أو أول ما الكاش يعدي
+    # ولو السيرفر مش واصل → بنخدم آخر نسخة محفوظة بدل صفحة بيضا
+    CACHE=/tmp/hotspot_portal.html
+    CTS=/tmp/hotspot_portal.ts
+    NOW=$(date +%s)
+    TS=$(cat "$CTS" 2>/dev/null)
+    case "$TS" in ''|*[!0-9]*) TS=0 ;; esac
+    AGE=$((NOW - TS))
+    if [ ! -s "$CACHE" ] || [ "$AGE" -gt 300 ]; then
+      RESP=$(https_get "https://\${SRV}/api/portal/page?gw_id=\${GW}")
+      if [ -n "$RESP" ]; then
+        # تعديل نقطتين في الصفحة:
+        #  1) تسجيل الدخول يروح للجسر المحلي بدل السيرفر (الموبايل مش واصل السيرفر أصلاً)
+        #  2) زرار صفحة الجلسة يتعامل مع السيرفر مباشرة (بعد التفعيل الموبايل يبقى مسموح له)
+        printf '%s' "$RESP" | sed "s|fetch('/api/portal/login'|fetch('/cgi-bin/go?ep=/apilogin/'|; s|window.location.replace('/session?token='|window.location.replace('https://\${SRV}/session?token='|" > "$CACHE.t" \
+          && { mv "$CACHE.t" "$CACHE"; date +%s > "$CTS"; }
+        rm -f "$CACHE.t"
+      fi
+    fi
+    echo "Content-Type: text/html; charset=utf-8"
+    echo "Cache-Control: no-store"
     echo ""
-    if [ -n "$RESP" ]; then
-      # تعديل نقطتين في الصفحة:
-      #  1) تسجيل الدخول يروح للجسر المحلي بدل السيرفر (الموبايل مش واصل السيرفر أصلاً)
-      #  2) زرار صفحة الجلسة يتعامل مع السيرفر مباشرة (بعد التفعيل الموبايل يبقى مسموح له)
-      printf '%s' "$RESP" | sed "s|fetch('/api/portal/login'|fetch('/cgi-bin/go?ep=/apilogin/'|; s|window.location.replace('/session?token='|window.location.replace('https://\${SRV}/session?token='|"
+    if [ -s "$CACHE" ]; then
+      cat "$CACHE"
     else
-      echo "<!DOCTYPE html><html dir='rtl'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'></head><body style='font-family:sans-serif;background:#070B12;color:#00D4FF;text-align:center;padding:60px 20px'><h2>📡 مشكلة اتصال مؤقتة</h2><p style='color:#6B8CAE'>اسحب الصفحة لتحديث، أو انتظر ثانية وجرّب تاني</p></body></html>"
+      echo "<!DOCTYPE html><html dir='rtl'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><meta http-equiv='refresh' content='3'></head><body style='font-family:sans-serif;background:#070B12;color:#00D4FF;text-align:center;padding:60px 20px'><h2>📡 بجهّز صفحة الدخول...</h2><p style='color:#6B8CAE'>الصفحة هتظهر تلقائياً خلال ثواني — استنى شوية</p></body></html>"
     fi
     ;;
   apilogin)
@@ -227,6 +250,8 @@ case "$EP" in
     if [ "\$REQUEST_METHOD" = "POST" ] && [ -n "\$CONTENT_LENGTH" ]; then
       BODY=\$(head -c "\$CONTENT_LENGTH" 2>/dev/null)
     fi
+    # ضمان إضافي: لو الصفحة بعتت gatewayId فاضي أو null نحط بتاع الجهاز
+    BODY=\$(printf '%s' "$BODY" | sed "s|\"gatewayId\":null|\"gatewayId\":\"${gwId}\"|g; s|\"gatewayId\":\"\"|\"gatewayId\":\"${gwId}\"|g")
     RESP=\$(https_post "https://\${SRV}/api/portal/login" "\$BODY")
     echo "Content-Type: application/json"
     echo ""
@@ -244,9 +269,13 @@ case "$EP" in
     printf '%s' "\$RESP"
     ;;
   *)
-    # أي طلب تاني من متصفح → وديره لصفحة البورتال
-    echo "Location: /cgi-bin/go?ep=/portal/&gw_id=\${GW}"
+    # أي طلب تاني من متصفح → وديره لصفحة البورتال (بنفس حماية الـ 302)
+    GO="/cgi-bin/go?ep=/portal/&gw_id=\${GW}"
+    echo "Status: 302 Found"
+    echo "Location: http://\${HTTP_HOST:-${routerIp}}$GO"
+    echo "Content-Type: text/html; charset=utf-8"
     echo ""
+    echo "<!DOCTYPE html><html dir='rtl'><head><meta charset='utf-8'><meta http-equiv='refresh' content='0;url=$GO'></head><body style='font-family:sans-serif;background:#070B12;color:#00D4FF;text-align:center;padding:60px 20px'><p>جاري فتح صفحة الدخول...</p><p><a href='$GO' style='color:#00D4FF'>اضغط هنا لو الصفحة مافتحتش</a></p></body></html>"
     ;;
 esac
 BRIDGE_EOF
@@ -544,6 +573,11 @@ if [ "$CHANGED" = "1" ]; then
   wifi reload
   echo "$(date): SSID => \$WANT"
 fi
+# تحديث كاش صفحة الدخول المحلي كل 5 دقايق
+# عشان أي موبايل يفتح البورتال يلاقي الصفحة جاهزة فوراً (من غير انتظار السيرفر)
+UPORT=$(uci -q get uhttpd.main.listen_http 2>/dev/null | tr ' ' '\\n' | grep -v '^\\[' | head -n1 | sed 's/.*://')
+[ -z "$UPORT" ] && UPORT=80
+wget -q -T 30 -O /dev/null "http://127.0.0.1:$UPORT/cgi-bin/go?ep=/portal/" 2>/dev/null
 SYNC_EOF
   chmod +x /usr/bin/hotspot-ssid-sync
   (crontab -l 2>/dev/null | grep -v hotspot-ssid-sync; echo "*/5 * * * * /usr/bin/hotspot-ssid-sync >/dev/null 2>&1") | crontab - >/dev/null 2>&1 \\
@@ -616,6 +650,16 @@ say "[9/9] تشغيل الخدمات + الاختبار النهائي..."
 sleep 4
 
 hotspot-test
+
+# تحميل نسخة صفحة الدخول في كاش الراوتر دلوقتي — أول موبايل هيلاقيها فوراً
+say "[تمهيد] تحضير صفحة الدخول محلياً (كاش فوري)..."
+UPORT=$(uci -q get uhttpd.main.listen_http 2>/dev/null | tr ' ' '\\n' | grep -v '^\\[' | head -n1 | sed 's/.*://')
+[ -z "$UPORT" ] && UPORT=80
+if wget -q -T 60 -O /dev/null "http://127.0.0.1:$UPORT/cgi-bin/go?ep=/portal/" 2>/dev/null; then
+  echo "✅ صفحة الدخول متحمّلة محلياً — هتظهر للموبايل فوراً"
+else
+  echo "⚠️  الصفحة هتتحمّل تلقائياً أول ما موبايل يفتح البورتال (أو بعد 5 دقايق بالكرون)"
+fi
 
 echo ""
 echo "════════════════════════════════════════════════"
