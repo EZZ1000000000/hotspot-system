@@ -75,7 +75,8 @@ function buildUnifiedScript(device: {
     gatewayInterface:  device.gatewayInterface,
     externalInterface: device.externalInterface,
     clientTimeout:     device.clientTimeout,
-    wifiSSID:          device.wifiSSID,
+    // اسم الشبكة الثابت: المحدد من المستخدم، ولو فاضي → اسم الجهاز (اسم الكافيه)
+    wifiSSID:          (device.wifiSSID || '').trim() || (device.name || '').trim(),
     tunnelPort:        device.tunnelPort,
     tunnelServer:      process.env.SSH_TUNNEL_HOST || null,
   })
@@ -96,7 +97,11 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'الجهاز غير موجود' }, { status: 404 })
 
     if (type === 'ssid') {
-      return new NextResponse(device.wifiSSID || '', {
+      // اسم الشبكة الثابت — الاسم اللي المستخدم حدده (wifiSSID)
+      // ولو فاضي بنرجع اسم الجهاز (اسم الكافيه) عشان الاسم عمره ما يضيع
+      // وده اللي الراوتر بيزامنه كل 5 دقايق — ثابت مفيش تغيير تلقائي
+      const fixedSSID = (device.wifiSSID || '').trim() || device.name.trim()
+      return new NextResponse(fixedSSID, {
         headers: { 'Content-Type': 'text/plain; charset=utf-8' },
       })
     }

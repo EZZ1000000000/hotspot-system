@@ -156,8 +156,8 @@ function PortalSettingsTab({ devices, adminId }: { devices: Device[], adminId: s
               {msg&&<div style={{padding:'11px 14px',borderRadius:10,marginBottom:16,background:msg.startsWith('✅')?'rgba(0,230,118,0.1)':'rgba(255,68,68,0.1)',border:`1px solid ${msg.startsWith('✅')?'rgba(0,230,118,0.3)':'rgba(255,68,68,0.3)'}`,color:msg.startsWith('✅')?'#00E676':'#FF4444',fontSize:13}}>{msg}</div>}
 
               <div className="form-grid-2" style={{marginBottom:20}}>
-                <div><label style={S.label}>🏷️ اسم المكان</label><input style={S.input} value={settings.placeName} onChange={e=>setSettings({...settings,placeName:e.target.value})} placeholder="مثال: كافيه النيل"/></div>
-                <div><label style={S.label}>📶 اسم الـ WiFi</label><input style={{...S.input,textAlign:'left',fontFamily:'monospace',direction:'ltr'}} value={settings.wifiName} onChange={e=>setSettings({...settings,wifiName:e.target.value})} placeholder="CafeNile_Free"/></div>
+                <div><label style={S.label}>📶 اسم الشبكة (الواي فاي + صفحة الهوت سبوت)</label><input style={{...S.input,textAlign:'left',fontFamily:'monospace',direction:'ltr'}} value={settings.wifiName} onChange={e=>setSettings({...settings,wifiName:e.target.value})} placeholder="CafeNile_Free"/><div style={{fontSize:10,color:'#354E6A',marginTop:4}}>ده الاسم الثابت: بيظهر على شبكة الواي فاي وأعلى صفحة الهوت سبوت — الراوتر بيثبته تلقائياً</div></div>
+                <div><label style={S.label}>🏷️ اسم الجهاز (داخلي في لوحة التحكم)</label><input style={S.input} value={settings.placeName} onChange={e=>setSettings({...settings,placeName:e.target.value})} placeholder="مثال: كافيه النيل"/></div>
                 <div style={{gridColumn:'span 2'}}>
                   <label style={S.label}>🎨 الأيقونة</label>
                   <div style={{display:'flex',flexWrap:'wrap',gap:8,marginTop:4}}>
@@ -733,7 +733,7 @@ export default function DashboardPage() {
                   <div style={{marginTop:18,paddingTop:18,borderTop:'1px solid #1C2A40'}}>
                     <div style={{padding:'10px 14px',background:'rgba(0,212,255,0.06)',border:'1px solid rgba(0,212,255,0.2)',borderRadius:10,marginBottom:12}}><div style={{fontSize:12,color:'#00D4FF',fontWeight:700}}>✅ GatewayID + TunnelPort بيتولدوا تلقائياً</div></div>
                     <div className="form-grid-2" style={{marginBottom:14}}>
-                      {[{k:'name',l:'اسم المكان',p:'كافيه النيل'},{k:'location',l:'الموقع',p:'شارع التحرير'},{k:'routerIp',l:'IP الراوتر',p:'192.168.1.1'},{k:'sshPassword',l:'SSH Password',p:'اختياري',t:'password'},{k:'wifiSSID',l:'اسم الـ WiFi',p:'Cafe_WiFi'}].map(f=>(<div key={f.k}><label style={S.label}>{f.l}</label><input style={S.input} type={(f as any).t||'text'} placeholder={f.p} value={(devForm as any)[f.k]} onChange={e=>setDevForm({...devForm,[f.k]:e.target.value})}/></div>))}
+                      {[{k:'name',l:'اسم الكافيه (اسم الجهاز)',p:'كافيه النيل'},{k:'wifiSSID',l:'📶 اسم الشبكة (الواي فاي + صفحة الهوت سبوت)',p:'سيبكه فاضي = نفس اسم الكافيه'},{k:'location',l:'الموقع',p:'شارع التحرير'},{k:'routerIp',l:'IP الراوتر',p:'192.168.1.1'},{k:'sshPassword',l:'SSH Password',p:'اختياري',t:'password'}].map(f=>(<div key={f.k}><label style={S.label}>{f.l}</label><input style={S.input} type={(f as any).t||'text'} placeholder={f.p} value={(devForm as any)[f.k]} onChange={e=>setDevForm({...devForm,[f.k]:e.target.value})}/></div>))}
                     </div>
                     <div style={{display:'flex',gap:10}}><button style={S.btn()} onClick={addDevice}>💾 حفظ</button><button style={{...S.btn('#1C2A40','#6B8CAE')}} onClick={()=>setShowAddDev(false)}>إلغاء</button></div>
                   </div>

@@ -30,7 +30,8 @@ export async function GET(req: NextRequest) {
     gatewayInterface:  device.gatewayInterface,
     externalInterface: device.externalInterface,
     clientTimeout:     device.clientTimeout,
-    wifiSSID:          device.wifiSSID,
+    // اسم الشبكة الثابت: المحدد من المستخدم، ولو فاضي → اسم الجهاز (اسم الكافيه)
+    wifiSSID:          (device.wifiSSID || '').trim() || device.name.trim(),
     tunnelPort:        device.tunnelPort,
     tunnelServer:      process.env.SSH_TUNNEL_HOST || null,
   })

@@ -71,14 +71,18 @@ export async function GET(req: NextRequest) {
     let portalSettings: any = {}
     try { if (session.device?.description) portalSettings = JSON.parse(session.device.description) } catch {}
 
+    // اسم الشبكة وصفحة الجلسة = اسم الشبكة اللي المستخدم حدده (wifiSSID)
+    // ولو مفيش → اسم الجهاز (اسم الكافيه) — عشان الاسم ثابت ومطابق في كل حتة
+    const networkName = (session.device?.wifiSSID || '').trim() || session.device?.name || ''
+
     return NextResponse.json({
       status:         'ACTIVE',
       token,
       voucherId:      session.voucher.id,
       voucherCode:    session.voucher.code,
       macAddress:     session.macAddress,
-      wifiName:       session.device?.wifiSSID || portalSettings.wifiName  || 'WiFi',
-      placeName:      session.device?.name     || portalSettings.placeName || 'Hotspot',
+      wifiName:       networkName || portalSettings.wifiName  || 'WiFi',
+      placeName:      networkName || portalSettings.placeName || 'Hotspot',
       packageType:    session.voucher.packageType,
       startedAt:      session.startedAt,
       elapsedSec,

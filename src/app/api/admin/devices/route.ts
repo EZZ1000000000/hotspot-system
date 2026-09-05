@@ -72,6 +72,12 @@ export async function POST(req: NextRequest) {
     // توليد tunnelPort تلقائي فريد
     const tunnelPort = await generateTunnelPort()
 
+    // اسم الشبكة الثابت: الاسم اللي المستخدم حدده
+    // ولو سيبه فاضي → اسم الجهاز نفسه (اسم الكافيه) عشان الاسم عمره ما يضيع
+    const fixedSSID = String(wifiSSID || '').trim() || String(name || '').trim() || null
+    if (fixedSSID && fixedSSID.length > 32)
+      return NextResponse.json({ error: 'اسم الشبكة لا يمكن أن يتجاوز 32 حرف' }, { status: 400 })
+
     const device = await prisma.device.create({
       data: {
         name,
@@ -80,7 +86,7 @@ export async function POST(req: NextRequest) {
         location:          location          || null,
         routerIp:          routerIp          || '192.168.1.1',
         sshPassword:       sshPassword       || null,
-        wifiSSID:          wifiSSID          || null,
+        wifiSSID:          fixedSSID,
         gatewayInterface:  gatewayInterface  || 'br-lan',
         externalInterface: externalInterface || 'eth0.1',
         clientTimeout:     clientTimeout     || 10,
@@ -97,6 +103,10 @@ export async function PUT(req: NextRequest) {
   try {
     const { id, name, location, routerIp, sshPassword, wifiSSID, isActive } = await req.json()
     if (!id) return NextResponse.json({ error: 'id مطلوب' }, { status: 400 })
+    // اسم الشبكة الثابت — لو اتحدّث لازم ميبقاش فاضي و ميعداش 32 حرف
+    const newSSID = (wifiSSID !== undefined && wifiSSID !== null) ? String(wifiSSID).trim() : undefined
+    if (newSSID === '') return NextResponse.json({ error: 'اسم الشبكة مينفعش يبقى فاضي' }, { status: 400 })
+    if (newSSID && newSSID.length > 32) return NextResponse.json({ error: 'اسم الشبكة لا يمكن أن يتجاوز 32 حرف' }, { status: 400 })
     const device = await prisma.device.update({
       where: { id },
       data: {
@@ -104,7 +114,7 @@ export async function PUT(req: NextRequest) {
         ...(location    !== undefined && { location }),
         ...(routerIp    !== undefined && { routerIp }),
         ...(sshPassword !== undefined && { sshPassword }),
-        ...(wifiSSID    !== undefined && { wifiSSID }),
+        ...(newSSID     !== undefined && { wifiSSID: newSSID }),
         ...(isActive    !== undefined && { isActive }),
       },
     })

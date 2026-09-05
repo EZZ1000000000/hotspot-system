@@ -36,13 +36,10 @@ export async function POST(req: NextRequest) {
     switch (action) {
       case 'info': {
         const info = await getRouterInfo(sshConfig)
-        // حدّث الـ SSID في الداتابيز لو جابه
-        if (info.success && info.ssid && info.ssid !== 'unknown') {
-          await prisma.device.update({
-            where: { id: deviceId },
-            data: { wifiSSID: info.ssid },
-          })
-        }
+        // ⚠️ مفيش كتابة للـ SSID في الداتابيز من هنا
+        // ده كان بيعمل مشكلة: بياخد اسم واجهة عشوائية من الراوتر (ممكن تكون
+        // واجهة الـ uplink) ويتكتب مكان الاسم الثابت → المزامنة تغير اسم الشبكة
+        // الاسم الثابت في الداتابيز هو المصدر الوحيد (بيتغير من لوحة التحكم بس)
         return NextResponse.json(info)
       }
 

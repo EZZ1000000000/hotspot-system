@@ -40,9 +40,14 @@ export async function GET(req: NextRequest) {
       } catch {}
     }
 
-    // اسم المكان واسم الـ WiFi من حقول الجهاز الأساسية
-    if (device?.name)     settings.placeName = device.name
-    if (device?.wifiSSID) settings.wifiName  = device.wifiSSID
+    // اسم المكان واسم الـ WiFi من اسم الشبكة الثابت (wifiSSID)
+    // اسم صفحة الهوت سبوت = اسم الشبكة — فالحقلين بيظهروا بنفس القيمة المضبوطة
+    // (المصدر الوحيد للاسم = wifiSSID، ولو فاضي → اسم الجهاز)
+    const networkName = (device?.wifiSSID || '').trim() || device?.name || ''
+    if (networkName) {
+      settings.placeName = networkName
+      settings.wifiName  = networkName
+    }
 
     return NextResponse.json(settings)
   } catch (err) {
@@ -73,14 +78,18 @@ export async function POST(req: NextRequest) {
     if (!allowManual && !allowNFC && !allowQR) {
       return NextResponse.json({ error: 'يجب تفعيل طريقة دخول واحدة على الأقل' }, { status: 400 })
     }
+    // اسم الشبكة (الواي فاي + صفحة الهوت سبوت) — نفس الاسم في كل حتة ومش أطول من 32 حرف
+    if (wifiName && String(wifiName).trim().length > 32) {
+      return NextResponse.json({ error: 'اسم الشبكة لا يمكن أن يتجاوز 32 حرف' }, { status: 400 })
+    }
 
-    // احفظ الإعدادات: اسم المكان واسم الـ WiFi في حقولهم الأساسية
-    // بقية الإعدادات في description كـ JSON
+    // احفظ الإعدادات: اسم الشبكة (wifiSSID) هو المصدر — بيتكتب من حقل اسم الـ WiFi
+    // اسم الجهاز (name) بيتكتب من حقل اسم المكان — والصفحة بتعرض اسم الشبكة
     await prisma.device.update({
       where: { id: deviceId },
       data: {
-        name:     placeName  || undefined,
-        wifiSSID: wifiName   || undefined,
+        name:     String(placeName || '').trim() || undefined,
+        wifiSSID: String(wifiName  || '').trim() || undefined,
         description: JSON.stringify({
           placeName,
           wifiName,

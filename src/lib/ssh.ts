@@ -56,11 +56,19 @@ export async function getSSID(config: RouterConfig, wifiInterface: string) {
 
 // جلب معلومات الراوتر
 export async function getRouterInfo(config: RouterConfig) {
+  // قراءة SSID من أول واجهة AP (mode=ap) — مش @wifi-iface[0] الأعمى
+  // لأن iface[0] ممكن تكون واجهة uplink (sta) واسمها اسم شبكة تانية خالص
+  const readSSID =
+    `i=0; SSID=unknown; ` +
+    `while uci -q show wireless.@wifi-iface[$i] >/dev/null 2>&1; do ` +
+    `M=$(uci -q get wireless.@wifi-iface[$i].mode 2>/dev/null); ` +
+    `if [ "$M" = "ap" ] || [ -z "$M" ]; then SSID=$(uci -q get wireless.@wifi-iface[$i].ssid 2>/dev/null || echo unknown); break; fi; ` +
+    `i=$((i+1)); done; echo "SSID:$SSID"`
   const command = [
     'echo "UPTIME:$(cat /proc/uptime | cut -d. -f1)"',
     'echo "MEMFREE:$(cat /proc/meminfo | grep MemFree | awk \'{print $2}\')"',
     'echo "CLIENTS:$(cat /proc/net/arp | grep br-lan | wc -l)"',
-    'echo "SSID:$(uci get wireless.@wifi-iface[0].ssid 2>/dev/null || echo unknown)"',
+    readSSID,
   ].join(' && ')
 
   const result = await runOnRouter(config, command)

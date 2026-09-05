@@ -234,8 +234,12 @@ export async function GET(req: NextRequest) {
       })
 
       if (device) {
-        placeName = device.name    || placeName
-        wifiName  = device.wifiSSID || wifiName
+        // اسم صفحة الهوت سبوت = اسم الشبكة اللي المستخدم حدده (wifiSSID)
+        // ولو مفيش اسم شبكة محدد → اسم الجهاز (اسم الكافيه)
+        // كده صفحة الهوت سبوت دايماً مطابقة لاسم الشبكة على الموبايل
+        const networkName = (device.wifiSSID || '').trim() || device.name.trim()
+        placeName = networkName || placeName
+        wifiName  = networkName || wifiName
 
         if (device.portalHtml) {
           html = device.portalHtml

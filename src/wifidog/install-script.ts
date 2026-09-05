@@ -496,7 +496,8 @@ cat > /usr/bin/hotspot-status << 'STATUS_EOF'
 # 📊 حالة السيتام — شغّله في أي وقت
 GW="${gwId}"
 SRV="${serverHost}"
-SSID=$(uci -q get wireless.@wifi-iface[0].ssid 2>/dev/null || echo unknown)
+# اسم الشبكة من أول واجهة AP (mode=ap) — مش iface[0] الأعمى (ممكن تكون uplink)
+WSSID=$(i=0; S=unknown; while uci -q show wireless.@wifi-iface[$i] >/dev/null 2>&1; do M=$(uci -q get wireless.@wifi-iface[$i].mode 2>/dev/null); if [ "$M" = "ap" ] || [ -z "$M" ]; then S=$(uci -q get wireless.@wifi-iface[$i].ssid 2>/dev/null || echo unknown); break; fi; i=$((i+1)); done; echo "$S")
 if pgrep wifidog >/dev/null 2>&1; then WD="🟢 شغال"; else WD="🔴 متوقف"; fi
 UP=$(awk '{h=int($1/3600);m=int(($1%3600)/60);print h"h "m"m"}' /proc/uptime)
 CL=$(arp -n 2>/dev/null | grep -v incomplete | grep -v Address | wc -l)
@@ -509,7 +510,7 @@ echo "║        Hotspot Status                ║"
 echo "╠══════════════════════════════════════╣"
 echo "║  GatewayID : \$GW"
 echo "║  Server    : \$SRV"
-echo "║  SSID      : \$SSID"
+echo "║  SSID      : \$WSSID"
 echo "║  wifidog   : \$WD"
 echo "║  الجسر     : \$BRST"
 echo "║  Uptime    : \$UP"
@@ -566,8 +567,16 @@ https_get(){
   uclient-fetch -q -T 20 -O - --no-check-certificate "$1" 2>>/tmp/hotspot_https.log \\
     || wget -q -T 20 -O - --no-check-certificate "$1" 2>>/tmp/hotspot_https.log
 }
-WANT=$(https_get "https://\$SRV/api/admin/config?deviceId=\$DEV&type=ssid" 2>/dev/null | tr -d '[:space:]')
+WANT=$(https_get "https://\$SRV/api/admin/config?deviceId=\$DEV&type=ssid" 2>/dev/null | head -n1 | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
 [ -z "$WANT" ] && exit 0
+# حماية: لو الرد كان صفحة خطأ (HTML/JSON) ولا الاسم طوله غير منطقي
+# → منغيرش اسم الشبكة بحاجة غلط — الاسم الثابت يفضل زي ما هو
+case "$WANT" in
+  *"<"*|*">"*|*"{"*|*"}"*|*'"'*|*"'"*|*"%"*|*"="*|*"&"*|*";"*) exit 0 ;;
+esac
+WLEN=\${#WANT}
+[ "\$WLEN" -gt 64 ] && exit 0
+[ "\$WANT" = "unknown" ] && exit 0
 CHANGED=0
 i=0
 while uci -q show wireless.@wifi-iface[$i] >/dev/null 2>&1; do
