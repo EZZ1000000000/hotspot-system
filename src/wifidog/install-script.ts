@@ -7,7 +7,7 @@
 // بيقوم بكل حاجة بالترتيب:
 //   [1/9] تنضيف أي إصلاحات قديمة (socat relay / /etc/hosts / dnsmasq)
 //         — دي كانت بتتعارض مع الجسر وبتكسر التفعيل
-//   [2/9] تسطيب wifidog + دعم HTTPS (libustream + ca-bundle) + uhttpd
+//   [2/9] تسطيب wifidog + iptables (جدار الاعتراض) + دعم HTTPS (libustream + ca-bundle) + uhttpd
 //   [3/9] جسر HTTPS محلي (uhttpd CGI على /www/cgi-bin/go)
 //         wifidog مش بيتكلم TLS 1.2 → الجسر بيستقبل طلباته محلياً
 //         ويمررها للسيرفر عبر HTTPS، وبيعالج الـ trailing slash
@@ -16,6 +16,7 @@
 //   [5/9] تغيير اسم الشبكة على كل واجهات AP (2.4GHz + 5GHz)
 //   [6/9] أوامر إدارة: hotspot-status / hotspot-ssid / hotspot-restart
 //         / hotspot-test (اختبار الاتصال بالسيرفر في أي وقت)
+//         / hotspot-doctor (فحص + إصلاح تلقائي لكل طبقات التفعيل في أي وقت)
 //   [7/9] مزامنة اسم الشبكة مع السيرفر كل 5 دقايق
 //   [8/9] SSH Reverse Tunnel (لو متظبط على الجهاز فقط)
 //   [9/9] تشغيل الخدمات + اختبار ذاتي كامل (ping + auth + الجسر + wifidog)
@@ -120,6 +121,16 @@ fi
 command -v wifidog >/dev/null 2>&1 \\
   && echo "✅ wifidog جاهز" \\
   || { echo "❌ فشل تسطيب wifidog — راجع /tmp/hotspot_opkg.log"; exit 1; }
+
+# iptables — دي اللي wifidog بيستخدمها عشان يعترف بموبايلات الزوار ويحوّلهم لصفحة الدخول
+# من غيرها: الموبايل يتصل بالشبكة عادي وصفحة الدخول مش بتظهر خالص
+if ! command -v iptables >/dev/null 2>&1; then
+  opkg update >>/tmp/hotspot_opkg.log 2>&1
+  opkg install iptables >>/tmp/hotspot_opkg.log 2>&1
+fi
+command -v iptables >/dev/null 2>&1 \\
+  && echo "✅ iptables جاهزة (جدار الاعتراض)" \\
+  || echo "⚠️  iptables مش متسطبة — صفحة الدخول مش هتظهر للموبايلات (شغّل: opkg update && opkg install iptables)"
 
 # دعم HTTPS لـ wget/uclient-fetch — ده أساس الجسر (لازم libustream)
 opkg list-installed 2>/dev/null | grep -q '^libustream' || {
@@ -573,7 +584,93 @@ cat > /usr/bin/hotspot-restart << 'ENDOFFILE'
 /etc/init.d/wifidog restart && echo "تم إعادة تشغيل wifidog"
 ENDOFFILE
 chmod +x /usr/bin/hotspot-restart
-echo "✅ أوامر الإدارة جاهزة: hotspot-status · hotspot-test · hotspot-ssid · hotspot-restart"
+
+cat > /usr/bin/hotspot-doctor << 'DOCTOR_EOF'
+#!/bin/sh
+# 🩺 طبيب الهوت سبوت — فحص + إصلاح تلقائي لكل طبقات التفعيل
+# شغّله في أي وقت لاقيت الصفحة مش بتظهر أو الحالة واقفة
+GW="${gwId}"
+say(){ echo ""; echo "==> $*"; }
+GOOD=0; BAD=0
+good(){ echo "✅ $*"; GOOD=$((GOOD+1)); }
+bad(){ echo "❌ $*"; BAD=$((BAD+1)); }
+
+say "[1/6] إنترنت الراوتر نفسه"
+if ping -c 2 -W 3 8.8.8.8 >/dev/null 2>&1; then
+  good "الإنترنت واصل"
+else
+  bad "الإنترنت مقطوع — راجع كابل/مودم الـ WAN (دي مش مشكلة السستم)"
+fi
+
+say "[2/6] خدمة wifidog"
+if pgrep wifidog >/dev/null 2>&1; then
+  good "wifidog شغال"
+else
+  echo "   ⏳ wifidog واقف — بجرب أشغّله..."
+  /etc/init.d/wifidog restart >/dev/null 2>&1 || /etc/init.d/wifidog start >/dev/null 2>&1
+  sleep 4
+  if pgrep wifidog >/dev/null 2>&1; then good "wifidog رجع شغال"; else bad "wifidog مش راضي يشتغل — ابعت سكرين من: logread | grep -i wifidog | tail -n 10"; fi
+fi
+
+say "[3/6] الجسر المحلي (uhttpd)"
+/etc/init.d/uhttpd restart >/dev/null 2>&1
+sleep 1
+BR=$(wget -q -T 15 -O - "http://127.0.0.1/cgi-bin/go?ep=/ping/?gw_id=$GW" 2>/dev/null)
+if [ "$BR" = "Pong" ]; then
+  good "الجسر شغال والسيرفر بيرد عليه"
+else
+  bad "الجسر مش شغال — شغّل: /etc/init.d/uhttpd restart ولو فضل فاشل ابعت: logread | tail -n 15"
+fi
+
+say "[4/6] قواعد الاعتراض (اللي بتفتح صفحة الدخول للموبايلات)"
+if command -v iptables >/dev/null 2>&1 && iptables -t nat -S 2>/dev/null | grep -q 2060; then
+  good "قاعدة الاعتراض مسجلة في الجدار الناري"
+else
+  echo "   ⏳ القاعدة ناقصة — بصلّحها (إعادة تشغيل الجدار الناري ثم wifidog)..."
+  /etc/init.d/firewall restart >/dev/null 2>&1
+  sleep 2
+  /etc/init.d/wifidog restart >/dev/null 2>&1
+  sleep 5
+  if command -v iptables >/dev/null 2>&1 && iptables -t nat -S 2>/dev/null | grep -q 2060; then
+    good "اتصلحت — القاعدة رجعت"
+  else
+    bad "لسه ناقصة — لو iptables مش متسطبة: opkg update && opkg install iptables ثم hotspot-doctor تاني"
+  fi
+fi
+
+say "[5/6] محاكاة موبايل — من wifidog لحد صفحة الدخول"
+H1=$(wget -S -T 10 -O /dev/null "http://127.0.0.1:2060/login/?gw_id=$GW" 2>&1)
+if echo "$H1" | grep -qi '302'; then
+  good "wifidog بيحوّل الموبايل لصفحة الدخول (302)"
+else
+  bad "wifidog مش بيحوّل — ردوده: $(echo "$H1" | head -n 3 | tr '\\n' ' ')"
+fi
+T3=$(wget -q -T 20 -O - "http://127.0.0.1/cgi-bin/go?ep=/portal/&gw_id=$GW" 2>/dev/null)
+case "$T3" in
+  *doLogin*) good "صفحة الدخول بتتخدم كاملة من الراوتر" ;;
+  *) bad "صفحة الدخول مش بتتحمّل — غالباً نفس سبب رقم 1 (الإنترنت/السيرفر)" ;;
+esac
+
+say "[6/6] تسجيل نبضة في السيرفر"
+if wget -q -T 15 -O /dev/null "http://127.0.0.1/cgi-bin/go?ep=/ping/?gw_id=$GW" 2>/dev/null; then
+  good "النبضة وصلت — الحالة هتبقى أونلاين في اللوحة حالاً"
+else
+  bad "النبضة مانجحتش — شغّل hotspot-test للتفاصيل"
+fi
+
+echo ""
+echo "═══════════════════════════════════════"
+if [ "$BAD" = "0" ]; then
+  echo "🎉 كل حاجة سليمة ($GOOD فحص ناجح)"
+  echo "   اعزل شبكة الواي فاي من الموبايل وارجع اتصل"
+  echo "   وافتح أي موقع — صفحة الدخول هتظهر حالاً"
+else
+  echo "⚠️  فيه $BAD مشكلة — ابعت سكرين بالرسائل دي كلها للدعم"
+fi
+echo "═══════════════════════════════════════"
+DOCTOR_EOF
+chmod +x /usr/bin/hotspot-doctor
+echo "✅ أوامر الإدارة جاهزة: hotspot-status · hotspot-test · hotspot-ssid · hotspot-restart · hotspot-doctor"
 
 # ────────────────────────────────────────────────
 # [7/9] مزامنة اسم الشبكة مع السيرفر (كل 5 دقايق)
@@ -704,6 +801,30 @@ if pgrep wifidog >/dev/null 2>&1; then
 else
   echo "❌ wifidog مش راضي يشتغل — دي آخر رسايل الراوتر (ابعت صورة منها للدعم):"
   logread 2>/dev/null | tail -n 20 | sed 's/^/     /'
+fi
+
+# ── التأكد إن قواعد الاعتراض اتسجلت في الجدار الناري فعلاً ──
+# دي القاعدة اللي بتخلي أي موبايل يفتح أي موقع يتبعت لصفحة الدخول تلقائياً
+# (لو الجدار الناري اتعاد تشغيله بعد wifidog — القاعدة بتضيع وصفحة الدخول مش بتظهر)
+if command -v iptables >/dev/null 2>&1; then
+  NF=0
+  while [ $NF -lt 8 ]; do
+    iptables -t nat -S 2>/dev/null | grep -q 2060 && break
+    sleep 2
+    NF=$((NF+1))
+  done
+  if iptables -t nat -S 2>/dev/null | grep -q 2060; then
+    echo "✅ قواعد الاعتراض اتسجلت — الموبايلات هتتبعت لصفحة الدخول تلقائياً"
+  else
+    echo "⚠️  قواعد الاعتراض مش ظاهرة — بجرب إعادة تشغيل الجدار الناري ثم wifidog..."
+    /etc/init.d/firewall restart >/dev/null 2>&1
+    sleep 2
+    /etc/init.d/wifidog restart >/dev/null 2>&1
+    sleep 5
+    iptables -t nat -S 2>/dev/null | grep -q 2060 \
+      && echo "✅ اتصلحت — الاعتراض شغال دلوقتي" \
+      || { echo "❌ القاعدة لسه ناقصة — شغّل: hotspot-doctor وابعت سكرين بالنتيجة"; }
+  fi
 fi
 
 hotspot-test
