@@ -7,6 +7,7 @@
 // لازم نرجع Auth: 1 أو Auth: 0 دايماً
 // Auth: -1 يخلي wifidog يوقف الاتصال ويرمي error
 // لو DB فشلت في counters → ارجع Auth: 1 (المستخدم يكمل)
+// الجهاز الموقوف من اللوحة (isActive=false) → Auth: 0 دايماً في المرحلتين — قطع الأكسسز للعميل المتأخر
 // =============================================
 import { prisma } from '../lib/prisma'
 import { isVoucherDepleted, bytesToMB } from '../lib/voucher'
@@ -24,9 +25,11 @@ export async function handleWifidogAuth(searchParams: URLSearchParams) {
     try {
       const session = await prisma.session.findUnique({
         where:   { token },
-        include: { voucher: true },
+        include: { voucher: true, device: true },
       })
       if (!session) return 'Auth: 0'
+      // الجهاز موقوف من اللوحة (عميل مدفّعش) → قطع فوري بغض النظر عن حالة الجلسة
+      if (session.device && !session.device.isActive) return 'Auth: 0'
       if (session.status === 'ENDED') return 'Auth: 0'
 
       if (session.status === 'ACTIVE') {
@@ -73,10 +76,12 @@ export async function handleWifidogAuth(searchParams: URLSearchParams) {
   try {
     const session = await prisma.session.findUnique({
       where:   { token },
-      include: { voucher: true },
+      include: { voucher: true, device: true },
     })
 
     if (!session) return 'Auth: 0'
+    // الجهاز موقوف من اللوحة → الراوتر بيفصل العميل أول ما يعمل counters (كل 5 دقايق)
+    if (session.device && !session.device.isActive) return 'Auth: 0'
     if (session.status !== 'ACTIVE') return 'Auth: 0'
 
     const now         = new Date()

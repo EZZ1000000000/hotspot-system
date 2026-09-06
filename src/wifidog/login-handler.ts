@@ -21,8 +21,10 @@ export async function handlePortalLogin(body: {
   } else {
     device = await prisma.device.findFirst({ where: { isActive: true } })
   }
-  if (!device || !device.isActive)
+  if (!device)
     return { success: false, message: 'الجهاز غير موجود أو غير نشط' }
+  if (!device.isActive)
+    return { success: false, message: '⛔ الخدمة موقوفة مؤقتاً من إدارة الشبكة — تواصل مع الإدارة' }
 
   // -- دور على الكود ---------------------------------------------------------
   let voucher = await prisma.voucher.findUnique({ where: { code: formattedCode } })

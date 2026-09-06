@@ -204,7 +204,8 @@ function AdminsTab({ sa }:{ sa:SA }) {
     setExpandedAdmin(prev=>prev===adminId?null:adminId)
     if(!adminDevices[adminId]){
       const d=await rpc(adminById(adminId)?.__srv,'/api/superadmin/admin-devices?adminId='+adminId)
-      if(Array.isArray(d)) setAdminDevices(prev=>({...prev,[adminId]:d}))
+      if(d&&Array.isArray(d.devices)) setAdminDevices(prev=>({...prev,[adminId]:d.devices}))
+      else if(Array.isArray(d)) setAdminDevices(prev=>({...prev,[adminId]:d}))
     }
     // حالة الاتصال الحقيقية لكل جهاز (heartbeat من الراوتر)
     const st=await rpc(adminById(adminId)?.__srv,'/api/superadmin/device-status?adminId='+adminId)
@@ -224,9 +225,18 @@ function AdminsTab({ sa }:{ sa:SA }) {
 
   const toggleDevice=async(adminId:string,deviceId:string,isActive:boolean)=>{
     setTogglingDev(deviceId)
-    await rpc(adminById(adminId)?.__srv,'/api/superadmin/admin-devices',{method:'PUT',body:JSON.stringify({deviceId,isActive:!isActive})})
-    const d=await rpc(adminById(adminId)?.__srv,'/api/superadmin/admin-devices?adminId='+adminId)
-    if(Array.isArray(d)) setAdminDevices(prev=>({...prev,[adminId]:d}))
+    const srv=adminById(adminId)?.__srv
+    const r=await rpc(srv,'/api/superadmin/admin-devices',{method:'POST',body:{deviceId,isActive:!isActive}})
+    if(r&&r.success){
+      setMsg(!isActive
+        ?'⛔ تم إيقاف الجهاز — مفيش مستخدم جديد هيعرف يدخل، والمتصلين الحاليين هتقفل شبكتهم خلال 5 دقايق كحد أقصى'
+        :'▶️ تم تشغيل الجهاز — النت رجع يشتغل والعملاء يعيدوا إدخال الكود من صفحة الدخول')
+    }else{
+      setMsg('❌ فشل تغيير حالة الجهاز'+(r&&r.error?': '+r.error:' — جرّب تاني'))
+    }
+    const d=await rpc(srv,'/api/superadmin/admin-devices?adminId='+adminId)
+    if(d&&Array.isArray(d.devices)) setAdminDevices(prev=>({...prev,[adminId]:d.devices}))
+    else if(Array.isArray(d)) setAdminDevices(prev=>({...prev,[adminId]:d}))
     setTogglingDev(null)
   }
 
@@ -520,6 +530,7 @@ function MonitorTab() {
   const [devStatus,setDevStatus]=useState<Record<string,DevStatus>>({}) ; const [statusLoading,setStatusLoading]=useState(false)
   const [toggling,setToggling]=useState<string|null>(null)
   const [lastCheck,setLastCheck]=useState<Date|null>(null)
+  const [toggleMsg,setToggleMsg]=useState<string|null>(null)
   const load=useCallback(async()=>{
     setLoading(true)
     const q=selAdmin?`?adminId=${selAdmin}`:''
@@ -561,10 +572,21 @@ function MonitorTab() {
     return ()=>clearInterval(t)
   },[load,checkAllDevices])
 
-  // توقيف/تشغيل جهاز من التاب مباشرة
+  // توقيف/تشغيل جهاز من التاب مباشرة — مع رسالة واضحة (القطع الفعلي للمتصلين بياخد لحد 5 دقايق)
   const toggleDev=async(d:any)=>{
-    setToggling(d.id)
-    await rpc((d as any).__srv||'gamma','/api/superadmin/device-toggle',{method:'POST',body:{deviceId:d.id,isActive:!d.isActive}})
+    setToggling(d.id); setToggleMsg(null)
+    try{
+      const r=await rpc((d as any).__srv||'gamma','/api/superadmin/device-toggle',{method:'POST',body:{deviceId:d.id,isActive:!d.isActive}})
+      if(r&&r.success){
+        setToggleMsg(!d.isActive
+          ?`⛔ تم إيقاف «${d.name}» — مفيش مستخدم جديد هيعرف يدخل فوراً، والمتصلين الحاليين هتقفل شبكتهم خلال 5 دقايق كحد أقصى`
+          :`▶️ تم تشغيل «${d.name}» — النت رجع يشتغل، والعملاء يعيدوا إدخال الكود من صفحة الدخول`)
+      }else{
+        setToggleMsg('❌ فشل تغيير حالة الجهاز'+(r&&r.error?': '+r.error:' — جرّب تاني'))
+      }
+    }catch{
+      setToggleMsg('❌ فشل الاتصال بالسيرفر — جرّب تاني')
+    }
     setToggling(null)
     load();checkAllDevices()
   }
@@ -598,6 +620,7 @@ function MonitorTab() {
           {stFaulty>0&&<span style={{...S.tag(true,'#FF4444'),fontSize:10,fontWeight:900}}>⚠️ {stFaulty} جهاز فيه عطل</span>}
         </div>
       </div>
+      {toggleMsg&&<div style={{...S.msg(toggleMsg.startsWith('⛔')||toggleMsg.startsWith('▶️')),marginBottom:12}}>{toggleMsg}<span onClick={()=>setToggleMsg(null)} style={{cursor:'pointer',opacity:0.6}}>✕</span></div>}
       <div className="stats-grid-5" style={{marginBottom:14}}>
         {[{i:'📡',l:'جلسات نشطة',v:stats.summary.totalActiveSessions,c:'#00E676'},{i:'🟢',l:'أجهزة متصلة الآن',v:`${stOnline}/${stats.summary.totalDevices}`,c:stOnline>0?'#00E676':'#354E6A'},{i:'⬇️',l:'تنزيل (كل الجلسات)',v:fmtMB(stats.summary.totalDataInMB),c:'#22d3ee'},{i:'⬆️',l:'رفع (كل الجلسات)',v:fmtMB(stats.summary.totalDataOutMB),c:'#4ade80'},{i:'🖥️',l:'أجهزة مفعّلة',v:`${stats.summary.totalActiveDevices}/${stats.summary.totalDevices}`,c:'#00D4FF'}].map((s,i)=>(
           <div key={i} style={{...S.card,textAlign:'center',padding:12}}><div style={{fontSize:18,marginBottom:3}}>{s.i}</div><div style={{fontSize:14,fontWeight:900,color:s.c}}>{s.v}</div><div style={{fontSize:9,color:'#354E6A',marginTop:2}}>{s.l}</div></div>
@@ -2443,7 +2466,7 @@ function DevicesControlTab({ sa }: { sa: SA }) {
     <div>
       <div style={{...S.card,marginBottom:14,padding:12,background:'rgba(251,146,60,0.05)',border:'1px solid rgba(251,146,60,0.2)'}}>
         <div style={{fontSize:12,color:'#fb923c',fontWeight:700}}>⚠️ تنبيه مهم</div>
-        <div style={{fontSize:11,color:'#6B8CAE',marginTop:4}}>إيقاف الجهاز هيقطع كل الجلسات النشطة عليه فوراً، وهيمنع الكروت من الاتصال. لازم تتأكد قبل الإيقاف.</div>
+        <div style={{fontSize:11,color:'#6B8CAE',marginTop:4}}>إيقاف الجهاز بيمنع فوراً أي مستخدم جديد، والجلسات النشطة بتتقفل خلال 5 دقايق كحد أقصى (الراوتر بيفحص كل 5 دقايق). لازم تتأكد قبل الإيقاف.</div>
       </div>
 
       {msg && <div style={S.msg(msg.startsWith('✅'))}>{msg}<span onClick={()=>setMsg('')} style={{cursor:'pointer'}}>✕</span></div>}

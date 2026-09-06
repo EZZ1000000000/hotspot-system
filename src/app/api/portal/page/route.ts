@@ -217,6 +217,36 @@ async function doLogin(){
 </html>`
 }
 
+// ─── صفحة «الخدمة موقوفة» — بتظهر لما الجهاز يكون متوقف من لوحة السوبر أدمن ───
+// بتتقدم على أي HTML مخصص — الإيقاف لازم يكون قاطع
+function stoppedTemplate(name: string): string {
+  return `<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${name} - الخدمة موقوفة</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{min-height:100vh;display:flex;align-items:center;justify-content:center;background:radial-gradient(ellipse at 40% 40%,#001830 0%,#070B12 65%);font-family:Cairo,Tahoma,Arial,sans-serif;direction:rtl;padding:20px}
+  .card{width:100%;max-width:400px;background:#0C1420;border:1px solid rgba(255,68,68,0.35);border-radius:20px;padding:36px 24px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,0.5)}
+  .icon{font-size:58px;margin-bottom:12px}
+  h1{font-size:20px;font-weight:900;color:#FF6B6B;margin-bottom:8px}
+  p{font-size:14px;color:#8FA8C0;line-height:2;margin-bottom:6px}
+  .sub{margin-top:16px;padding:12px 14px;background:#070B12;border:1px solid #1C2A40;border-radius:10px;font-size:12px;color:#6B8CAE;line-height:1.9}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="icon">⛔</div>
+  <h1>الخدمة موقوفة مؤقتاً</h1>
+  <p>شبكة «${name}» متوقفة حالياً من إدارة النظام</p>
+  <div class="sub">لإعادة تشغيل الخدمة: تواصل مع الإدارة لتسديد الاشتراك.<br>بعد التشغيل اتصل بالشبكة من جديد وفعّل كودك.</div>
+</div>
+</body>
+</html>`
+}
+
 // ─── GET ──────────────────────────────────────────────────
 export async function GET(req: NextRequest) {
   const gwId = new URL(req.url).searchParams.get('gw_id')
@@ -230,7 +260,7 @@ export async function GET(req: NextRequest) {
     try {
       const device = await prisma.device.findUnique({
         where:  { gatewayId: gwId },
-        select: { name: true, wifiSSID: true, description: true, portalHtml: true },
+        select: { name: true, wifiSSID: true, description: true, portalHtml: true, isActive: true },
       })
 
       if (device) {
@@ -241,7 +271,10 @@ export async function GET(req: NextRequest) {
         placeName = networkName || placeName
         wifiName  = networkName || wifiName
 
-        if (device.portalHtml) {
+        if (device.isActive === false) {
+          const safeName = networkName.replace(/</g, '&lt;').replace(/>/g, '&gt;')
+          html = stoppedTemplate(safeName)
+        } else if (device.portalHtml) {
           html = device.portalHtml
         } else if (device.description) {
           try {
