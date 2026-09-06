@@ -27,6 +27,7 @@
 //
 // السكريبت idempotent — آمن يشغّله أكتر من مرة (تسطيب جديد أو إصلاح)
 // ═══════════════════════════════════════════════════════════
+import { buildWatchdogScript } from './watchdog-script'
 
 export function shellQuote(s: string): string {
   if (s === '') return "''"
@@ -200,7 +201,7 @@ fi
 # فورمات مصنع) تسطيب iptables بيفشل بخطأ "cannot find dependency kernel".
 # الحل: نقرأ إصدار kernel المطلوب من الفيد نفسه ونسجله في سجل opkg ثم نعيد المحاولة
 if ! command -v iptables >/dev/null 2>&1; then
-  KVER="$(opkg info kmod-nft-compat 2>/dev/null | sed -n 's/.*kernel (=\\([^)]*\\)).*/\\1/p' | head -n1)"
+  KVER="$(opkg info kmod-nft-compat 2>/dev/null | sed -n 's/.*kernel (=[[:space:]]*\\([^)]*\\)).*/\\1/p' | head -n1 | tr -d ' \\t')"
   if [ -n "$KVER" ]; then
     STK="$(opkg status kernel 2>/dev/null | sed -n 's/^Version: //p' | head -n1)"
     if [ -z "$STK" ]; then
@@ -218,6 +219,12 @@ if ! command -v iptables >/dev/null 2>&1; then
     opkg install --force-depends "$PKG2" >>/tmp/hotspot_opkg.log 2>&1
   done
   command -v iptables >/dev/null 2>&1 || ln -sf /usr/sbin/xtables-nft-multi /usr/sbin/iptables 2>/dev/null
+fi
+# ومحاولة أخيرة: باك-إند legacy — أضمن مسار على كيرنلات الفيرمويرات المخصّصة
+if ! command -v iptables >/dev/null 2>&1; then
+  opkg install iptables-zz-legacy >>/tmp/hotspot_opkg.log 2>&1 \
+    || opkg install --force-depends iptables-zz-legacy >>/tmp/hotspot_opkg.log 2>&1
+  [ -f /usr/sbin/xtables-legacy-multi ] && ln -sf /usr/sbin/xtables-legacy-multi /usr/sbin/iptables 2>/dev/null
 fi
 # فحص إن امتدادات iptables شغالة فعلاً — كيرنلات مخصصة (فيرموير معدّل بعد فورمات)
 # ممكن تكون مبنية بإعدادات مختلفة فباك-إند nft بيفشل مع امتدادات القواعد
@@ -252,7 +259,7 @@ if [ "$IPTOK" != "1" ] && command -v iptables >/dev/null 2>&1; then
 fi
 command -v iptables >/dev/null 2>&1 \\
   && echo "✅ iptables جاهزة (جدار الاعتراض)" \\
-  || echo "⚠️  iptables مش متسطبة — صفحة الدخول مش هتظهر للموبايلات (شغّل: opkg update && opkg install iptables)"
+  || echo "⚠️  iptables مش متسطبة — الحارس الذاتي هيحاول يسطّبها لوحده كل 5 دقايق، ولو فشل: opkg update && opkg install iptables"
 
 # دعم HTTPS لـ wget/uclient-fetch — ده أساس الجسر (لازم libustream)
 opkg list-installed 2>/dev/null | grep -q '^libustream' || {
@@ -745,6 +752,7 @@ else
 fi
 
 say "[4/6] قواعد الاعتراض (اللي بتفتح صفحة الدخول للموبايلات)"
+echo "   الباك-إند: $(iptables -V 2>&1 | head -n1)"
 if command -v iptables >/dev/null 2>&1 && iptables -t nat -S 2>/dev/null | grep -q 2060; then
   good "قاعدة الاعتراض مسجلة في الجدار الناري"
 else
@@ -756,7 +764,43 @@ else
   if command -v iptables >/dev/null 2>&1 && iptables -t nat -S 2>/dev/null | grep -q 2060; then
     good "اتصلحت — القاعدة رجعت"
   else
-    bad "لسه ناقصة — لو iptables مش متسطبة: opkg update && opkg install iptables ثم hotspot-doctor تاني"
+    # فحص فعلي لامتدادات الباك-إند — كيرنلات مخصّصة بعد الفورمات باك-إند nft بيفشل فيها
+    # (REDIRECT/REJECT) رغم إن الأساسيات شغالة → نبدّل تلقائياً لـ legacy المتوافق
+    if command -v iptables >/dev/null 2>&1; then
+      iptables -t nat -N HS_T >/dev/null 2>&1
+      if ! iptables -t nat -A HS_T -p tcp -j REDIRECT --to-ports 2060 >/dev/null 2>&1; then
+        echo "   🔧 امتدادات nft معطوبة على الكيرنل ده — بنبدّل لـ legacy..."
+        for m in ip_tables iptable_filter iptable_nat iptable_mangle ipt_REJECT nf_nat nf_conntrack nf_nat_redirect xt_REDIRECT xt_MASQUERADE xt_tcpudp xt_state xt_conntrack xt_mac xt_mark; do modprobe $m >/dev/null 2>&1; done
+        KVER="$(opkg info kmod-ipt-core 2>/dev/null | sed -n 's/.*kernel (=[[:space:]]*\\([^)]*\\)).*/\\1/p' | head -n1 | tr -d ' \\t')"
+        [ -z "$KVER" ] && KVER="$(opkg info kmod-nft-compat 2>/dev/null | sed -n 's/.*kernel (=[[:space:]]*\\([^)]*\\)).*/\\1/p' | head -n1 | tr -d ' \\t')"
+        if [ -n "$KVER" ]; then
+          STK="$(opkg status kernel 2>/dev/null | sed -n 's/^Version: //p' | head -n1)"
+          if [ -z "$STK" ]; then
+            { echo ""; echo "Package: kernel"; echo "Version: $KVER"; echo "Architecture: $(opkg print-architecture 2>/dev/null || echo mipsel_24kc)"; echo "Status: install ok installed"; echo ""; } >> /usr/lib/opkg/status
+          elif [ "$STK" != "$KVER" ]; then
+            sed -i "/^Package: kernel\\$/,/^\\$/s/^Version: .*/Version: $KVER/" /usr/lib/opkg/status
+          fi
+        fi
+        opkg update >/dev/null 2>&1
+        opkg install iptables-zz-legacy >/dev/null 2>&1 || opkg install --force-depends iptables-zz-legacy >/dev/null 2>&1
+        if [ -f /usr/sbin/xtables-legacy-multi ]; then
+          ln -sf /usr/sbin/xtables-legacy-multi /usr/sbin/iptables
+          ln -sf /usr/sbin/xtables-legacy-multi /usr/sbin/iptables-restore 2>/dev/null
+          ln -sf /usr/sbin/xtables-legacy-multi /usr/sbin/iptables-save 2>/dev/null
+          echo "   ✅ اتبدّل لباك-إند legacy (متوافق مع الكيرنل)"
+        fi
+        /etc/init.d/firewall restart >/dev/null 2>&1
+        sleep 2
+        /etc/init.d/wifidog restart >/dev/null 2>&1
+        sleep 5
+      fi
+      iptables -t nat -F HS_T >/dev/null 2>&1; iptables -t nat -X HS_T >/dev/null 2>&1
+    fi
+    if command -v iptables >/dev/null 2>&1 && iptables -t nat -S 2>/dev/null | grep -q 2060; then
+      good "اتصلحت — القاعدة رجعت (باك-إند legacy)"
+    else
+      bad "لسه ناقصة — شغّل: hotspot-watchdog واستنى 10 دقايق، ولو فضلت: ابعت سكرين من cat /tmp/hotspot_watchdog.log"
+    fi
   fi
 fi
 
@@ -794,25 +838,7 @@ DOCTOR_EOF
 chmod +x /usr/bin/hotspot-doctor
 
 cat > /usr/bin/hotspot-watchdog << 'WDG_EOF'
-#!/bin/sh
-# 🛡️ الحارس الذاتي — شغال كل 5 دقايق من الكرون
-# لو wifidog وقع أو الجسر وقع أو قاعدة الاعتراض ضاعت — يصلحها لوحده
-# (wifidog بيقفل نفسه لو iptables مش موجودة أو خط النت واقف — الحارس بيجرب تاني كل 5 دقايق
-#  فأول ما النت يرجع، الحارس بيرجّع wifidog والاعتراض لوحده من غير ما حد يتصل بنا)
-if ! pgrep uhttpd >/dev/null 2>&1; then
-  /etc/init.d/uhttpd start >/dev/null 2>&1
-fi
-if ! pgrep wifidog >/dev/null 2>&1; then
-  /etc/init.d/wifidog restart >/dev/null 2>&1 || /etc/init.d/wifidog start >/dev/null 2>&1
-fi
-if command -v iptables >/dev/null 2>&1; then
-  if ! iptables -t nat -S 2>/dev/null | grep -q 2060; then
-    /etc/init.d/firewall restart >/dev/null 2>&1
-    sleep 3
-    /etc/init.d/wifidog restart >/dev/null 2>&1
-  fi
-fi
-exit 0
+${buildWatchdogScript()}
 WDG_EOF
 chmod +x /usr/bin/hotspot-watchdog
 (crontab -l 2>/dev/null | grep -v hotspot-watchdog; echo "*/5 * * * * /usr/bin/hotspot-watchdog >/dev/null 2>&1") | crontab - >/dev/null 2>&1 || { echo "*/5 * * * * /usr/bin/hotspot-watchdog >/dev/null 2>&1" >> /etc/crontabs/root; }
