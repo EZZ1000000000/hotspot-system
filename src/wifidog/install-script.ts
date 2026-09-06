@@ -17,6 +17,7 @@
 //   [6/9] أوامر إدارة: hotspot-status / hotspot-ssid / hotspot-restart
 //         / hotspot-test (اختبار الاتصال بالسيرفر في أي وقت)
 //         / hotspot-doctor (فحص + إصلاح تلقائي لكل طبقات التفعيل في أي وقت)
+//         / hotspot-watchdog (حارس ذاتي — شغال كل 5 دقايق من الكرون ويصلح أي حاجة وقعت لوحدها)
 //   [7/9] مزامنة اسم الشبكة مع السيرفر كل 5 دقايق
 //   [8/9] SSH Reverse Tunnel (لو متظبط على الجهاز فقط)
 //   [9/9] تشغيل الخدمات + اختبار ذاتي كامل (ping + auth + الجسر + wifidog)
@@ -670,7 +671,33 @@ fi
 echo "═══════════════════════════════════════"
 DOCTOR_EOF
 chmod +x /usr/bin/hotspot-doctor
-echo "✅ أوامر الإدارة جاهزة: hotspot-status · hotspot-test · hotspot-ssid · hotspot-restart · hotspot-doctor"
+
+cat > /usr/bin/hotspot-watchdog << 'WDG_EOF'
+#!/bin/sh
+# 🛡️ الحارس الذاتي — شغال كل 5 دقايق من الكرون
+# لو wifidog وقع أو الجسر وقع أو قاعدة الاعتراض ضاعت — يصلحها لوحده
+# (wifidog بيقفل نفسه لو iptables مش موجودة أو خط النت واقف — الحارس بيجرب تاني كل 5 دقايق
+#  فأول ما النت يرجع، الحارس بيرجّع wifidog والاعتراض لوحده من غير ما حد يتصل بنا)
+if ! pgrep uhttpd >/dev/null 2>&1; then
+  /etc/init.d/uhttpd start >/dev/null 2>&1
+fi
+if ! pgrep wifidog >/dev/null 2>&1; then
+  /etc/init.d/wifidog restart >/dev/null 2>&1 || /etc/init.d/wifidog start >/dev/null 2>&1
+fi
+if command -v iptables >/dev/null 2>&1; then
+  if ! iptables -t nat -S 2>/dev/null | grep -q 2060; then
+    /etc/init.d/firewall restart >/dev/null 2>&1
+    sleep 3
+    /etc/init.d/wifidog restart >/dev/null 2>&1
+  fi
+fi
+exit 0
+WDG_EOF
+chmod +x /usr/bin/hotspot-watchdog
+(crontab -l 2>/dev/null | grep -v hotspot-watchdog; echo "*/5 * * * * /usr/bin/hotspot-watchdog >/dev/null 2>&1") | crontab - >/dev/null 2>&1 || { echo "*/5 * * * * /usr/bin/hotspot-watchdog >/dev/null 2>&1" >> /etc/crontabs/root; }
+/etc/init.d/cron restart >/dev/null 2>&1
+
+echo "✅ أوامر الإدارة جاهزة: hotspot-status · hotspot-test · hotspot-ssid · hotspot-restart · hotspot-doctor · hotspot-watchdog"
 
 # ────────────────────────────────────────────────
 # [7/9] مزامنة اسم الشبكة مع السيرفر (كل 5 دقايق)
