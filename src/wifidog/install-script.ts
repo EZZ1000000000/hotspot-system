@@ -219,6 +219,37 @@ if ! command -v iptables >/dev/null 2>&1; then
   done
   command -v iptables >/dev/null 2>&1 || ln -sf /usr/sbin/xtables-nft-multi /usr/sbin/iptables 2>/dev/null
 fi
+# فحص إن امتدادات iptables شغالة فعلاً — كيرنلات مخصصة (فيرموير معدّل بعد فورمات)
+# ممكن تكون مبنية بإعدادات مختلفة فباك-إند nft بيفشل مع امتدادات القواعد
+# (REJECT/REDIRECT) رغم إن الأساسيات (ACCEPT/DROP) شغالة.
+# الحل: نختبر القواعد المطلوبة فعلياً — ولو فشلت نبدّل لباك-إند legacy المتوافق
+IPTOK=0
+if command -v iptables >/dev/null 2>&1; then
+  for m in xt_REDIRECT xt_MASQUERADE ipt_REJECT nf_reject_ipv4 xt_tcpudp xt_mark xt_mac xt_state xt_conntrack xt_LOG xt_comment xt_multiport; do
+    modprobe $m >/dev/null 2>&1
+  done
+  iptables -t nat -N HS_T >/dev/null 2>&1
+  iptables -t filter -N HS_T >/dev/null 2>&1
+  if iptables -t nat -A HS_T -p tcp --dport 80 -j REDIRECT --to-ports 2060 >/dev/null 2>&1 \\
+     && iptables -t filter -A HS_T -p tcp -j REJECT --reject-with icmp-port-unreachable >/dev/null 2>&1; then
+    IPTOK=1
+  fi
+  iptables -t nat -F HS_T >/dev/null 2>&1; iptables -t nat -X HS_T >/dev/null 2>&1
+  iptables -t filter -F HS_T >/dev/null 2>&1; iptables -t filter -X HS_T >/dev/null 2>&1
+fi
+if [ "$IPTOK" != "1" ] && command -v iptables >/dev/null 2>&1; then
+  echo "🔧 امتدادات iptables (nft) مش شغالة على الكيرنل ده — بنبدّل لباك-إند legacy..."
+  opkg install iptables-zz-legacy >>/tmp/hotspot_opkg.log 2>&1 \\
+    || opkg install --force-depends iptables-zz-legacy >>/tmp/hotspot_opkg.log 2>&1
+  if [ -f /usr/sbin/xtables-legacy-multi ]; then
+    ln -sf /usr/sbin/xtables-legacy-multi /usr/sbin/iptables
+    ln -sf /usr/sbin/xtables-legacy-multi /usr/sbin/iptables-restore 2>/dev/null
+    ln -sf /usr/sbin/xtables-legacy-multi /usr/sbin/iptables-save 2>/dev/null
+    echo "✅ iptables اتبدّلت لباك-إند legacy (متوافق مع الكيرنل)"
+  else
+    echo "⚠️  باك-إند legacy متسطبش — لو قواعد الاعتراض مش اشتغلت راجع /tmp/hotspot_opkg.log"
+  fi
+fi
 command -v iptables >/dev/null 2>&1 \\
   && echo "✅ iptables جاهزة (جدار الاعتراض)" \\
   || echo "⚠️  iptables مش متسطبة — صفحة الدخول مش هتظهر للموبايلات (شغّل: opkg update && opkg install iptables)"
