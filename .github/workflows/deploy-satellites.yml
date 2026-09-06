@@ -21,21 +21,11 @@ concurrency:
 
 jobs:
   deploy:
-    name: Deploy ${{ matrix.name }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: kappa
-            scope: samgany278-gmailcoms-projects
-            secret: KAPPA_VERCEL_TOKEN
-          - name: dun
-            scope: bdalhlymzaldyn7-gmailcoms-projects
-            secret: DUN_VERCEL_TOKEN
-          - name: seven
-            scope: zyzwdnjr-gmailcoms-projects
-            secret: SEVEN_VERCEL_TOKEN
+        site: [kappa, dun, seven]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -45,9 +35,32 @@ jobs:
         with:
           node-version: 20
 
-      - name: Deploy ${{ matrix.name }} → Vercel Production
+      # ── kappa ──────────────────────────────────────────────
+      - name: Deploy kappa → Vercel Production
+        if: matrix.site == 'kappa'
         env:
-          VERCEL_TOKEN: ${{ secrets[matrix.secret] }}
+          VERCEL_TOKEN: ${{ secrets.KAPPA_VERCEL_TOKEN }}
+          VERCEL_SCOPE: samgany278-gmailcoms-projects
         run: |
-          npx -y vercel@latest link --yes --project hotspot-system --scope "${{ matrix.scope }}" --token "$VERCEL_TOKEN"
-          npx -y vercel@latest deploy --prod --yes --scope "${{ matrix.scope }}" --token "$VERCEL_TOKEN"
+          npx -y vercel@latest link --yes --project hotspot-system --scope "$VERCEL_SCOPE" --token "$VERCEL_TOKEN"
+          npx -y vercel@latest deploy --prod --yes --scope "$VERCEL_SCOPE" --token "$VERCEL_TOKEN"
+
+      # ── dun ────────────────────────────────────────────────
+      - name: Deploy dun → Vercel Production
+        if: matrix.site == 'dun'
+        env:
+          VERCEL_TOKEN: ${{ secrets.DUN_VERCEL_TOKEN }}
+          VERCEL_SCOPE: bdalhlymzaldyn7-gmailcoms-projects
+        run: |
+          npx -y vercel@latest link --yes --project hotspot-system --scope "$VERCEL_SCOPE" --token "$VERCEL_TOKEN"
+          npx -y vercel@latest deploy --prod --yes --scope "$VERCEL_SCOPE" --token "$VERCEL_TOKEN"
+
+      # ── seven ──────────────────────────────────────────────
+      - name: Deploy seven → Vercel Production
+        if: matrix.site == 'seven'
+        env:
+          VERCEL_TOKEN: ${{ secrets.SEVEN_VERCEL_TOKEN }}
+          VERCEL_SCOPE: zyzwdnjr-gmailcoms-projects
+        run: |
+          npx -y vercel@latest link --yes --project hotspot-system --scope "$VERCEL_SCOPE" --token "$VERCEL_TOKEN"
+          npx -y vercel@latest deploy --prod --yes --scope "$VERCEL_SCOPE" --token "$VERCEL_TOKEN"
