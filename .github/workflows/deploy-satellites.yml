@@ -1,0 +1,53 @@
+# ═══════════════════════════════════════════════════════════════════
+# نشر تلقائي للسيرفرات التابعة على Vercel (kappa / dun / seven)
+#
+# كل تحديث على main → يتبني ويترفع production على السيرفرات الثلاثة.
+# (gamma مربوط بـ GitHub Integration من لوحة Vercel بشكل أصلي)
+#
+# التوكنات مخزنة مشفرة في GitHub Actions Secrets:
+#   KAPPA_VERCEL_TOKEN / DUN_VERCEL_TOKEN / SEVEN_VERCEL_TOKEN
+# ممكن كمان تشغيل النشر يدويًا من تبويب Actions (Run workflow).
+# ═══════════════════════════════════════════════════════════════════
+name: Deploy Satellites (kappa / dun / seven)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-satellites
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: kappa
+            scope: samgany278-gmailcoms-projects
+            secret: KAPPA_VERCEL_TOKEN
+          - name: dun
+            scope: bdalhlymzaldyn7-gmailcoms-projects
+            secret: DUN_VERCEL_TOKEN
+          - name: seven
+            scope: zyzwdnjr-gmailcoms-projects
+            secret: SEVEN_VERCEL_TOKEN
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Deploy ${{ matrix.name }} → Vercel Production
+        env:
+          VERCEL_TOKEN: ${{ secrets[matrix.secret] }}
+        run: |
+          npx -y vercel@latest link --yes --project hotspot-system --scope "${{ matrix.scope }}" --token "$VERCEL_TOKEN"
+          npx -y vercel@latest deploy --prod --yes --scope "${{ matrix.scope }}" --token "$VERCEL_TOKEN"
