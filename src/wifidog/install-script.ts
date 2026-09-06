@@ -24,10 +24,14 @@
 //   [7/9] مزامنة اسم الشبكة مع السيرفر كل 5 دقايق
 //   [8/9] SSH Reverse Tunnel (لو متظبط على الجهاز فقط)
 //   [9/9] تشغيل الخدمات + اختبار ذاتي كامل (ping + auth + الجسر + wifidog)
+//   [آخر خطوة] تسجيل نسخة السكربت: يكتب /etc/hotspot-script-version
+//         ويبلغ السيرفر — عشان اللوحة تعرف أي راوتر محدّث وأي راوتر
+//         لسه محتاج تشغيل السكربت (بانر "السكربت اتغير" في اللوحة)
 //
 // السكريبت idempotent — آمن يشغّله أكتر من مرة (تسطيب جديد أو إصلاح)
 // ═══════════════════════════════════════════════════════════
 import { buildWatchdogScript } from './watchdog-script'
+import { INSTALL_SCRIPT_VERSION } from './script-meta'
 
 export function shellQuote(s: string): string {
   if (s === '') return "''"
@@ -75,6 +79,7 @@ export function buildInstallScript(o: InstallScriptOptions): string {
 # الجهاز    : ${deviceName}
 # GatewayID : ${gwId}
 # السيرفر   : ${serverHost}
+# النسخة    : WFD_INSTALL_VERSION=${INSTALL_SCRIPT_VERSION}
 # التاريخ   : ${today}
 # ================================================================
 # ده السكريبت الوحيد اللي محتاجه — ينفع للجهاز الجديد وللجهاز القديم
@@ -1026,6 +1031,7 @@ echo " ✅ السكربت الشامل خلص!"
 echo ""
 echo " GatewayID : $GW_ID"
 echo " السيرفر   : $SRV"
+echo " النسخة    : v${INSTALL_SCRIPT_VERSION}"
 echo ""
 echo " 🔥 جرب دلوقتي:"
 echo "    1- اعزل شبكة الواي فاي من الموبايل وارجع اتصل"
@@ -1035,5 +1041,18 @@ echo ""
 echo " 🧪 لو حابب تتأكد في أي وقت: hotspot-test"
 echo "════════════════════════════════════════════════"
 echo ""
+
+# ────────────────────────────────────────────────
+# تسجيل نسخة السكربت — على الراوتر وفي السيرفر
+# ده اللي بيخلي اللوحة تعرف إن الراوتر ده محدّث
+# (لو السكربت وقف قبل الخطوة دي — اللوحة هتفضل مصنفه "قديم" وده المطلوب)
+# ────────────────────────────────────────────────
+echo "${INSTALL_SCRIPT_VERSION}" > /etc/hotspot-script-version 2>/dev/null
+if wget -q -T 20 -O /dev/null "https://$SRV/api/router/report-script?gw_id=$GW_ID&inst=${INSTALL_SCRIPT_VERSION}" 2>/dev/null \
+   || uclient-fetch -q -T 20 -O /dev/null "https://$SRV/api/router/report-script?gw_id=$GW_ID&inst=${INSTALL_SCRIPT_VERSION}" 2>/dev/null; then
+  echo "✅ النسخة v${INSTALL_SCRIPT_VERSION} اتسجلت في اللوحة — هيظهر جوار اسم الجهاز: محدّث"
+else
+  echo "⚠️  تسجيل النسخة في اللوحة مانجحش (الراوتر هيعيد المحاولة تلقائياً كل ساعة)"
+fi
 `
 }

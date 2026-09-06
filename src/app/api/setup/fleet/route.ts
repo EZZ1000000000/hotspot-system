@@ -101,6 +101,27 @@ export async function GET() {
       orderBy: { createdAt: 'asc' },
     })
     selfAdmins = rows
+    // ── تقارير نسخة السكربت (script-report:<gatewayId> من KeyValueStore) ──
+    // نفس شكل /api/admin/devices — عشان شارة "محدّث / محتاج تحديث" تشتغل
+    // على أجهزة السيرفر الحالي زي أجهزة السيرفرات الباقية بالظبط
+    try {
+      const allDevices = (rows as { devices?: { gatewayId: string }[] }[]).flatMap(a => a.devices || [])
+      const reports = await prisma.keyValueStore.findMany({
+        where: { key: { in: allDevices.map(d => `script-report:${d.gatewayId}`) } },
+      })
+      const byGw = new Map<string, unknown>()
+      for (const r of reports) {
+        const gw = r.key.replace('script-report:', '')
+        try { byGw.set(gw, JSON.parse(r.value)) } catch {}
+      }
+      selfAdmins = (rows as { devices?: unknown[] }[]).map(a => ({
+        ...a,
+        devices: ((a.devices || []) as Record<string, unknown>[]).map(d => ({
+          ...d,
+          scriptReport: byGw.get(String(d.gatewayId)) || null,
+        })),
+      }))
+    } catch {}
   } catch (e: unknown) {
     selfOk = false
     selfError = e instanceof Error ? e.message : 'خطأ في قاعدة البيانات المحلية'

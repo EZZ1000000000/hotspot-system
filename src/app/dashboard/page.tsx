@@ -1,11 +1,13 @@
 'use client'
 import { useState, useEffect, useCallback } from 'react'
 import { getLang, setLang, t, type Lang } from '@/lib/i18n'
+import { INSTALL_SCRIPT_VERSION, INSTALL_SCRIPT_DATE, INSTALL_SCRIPT_CHANGES } from '@/wifidog/script-meta'
 
 type Notification = { id:string; type:string; title:string; body:string; isRead:boolean; createdAt:string }
+type ScriptReport = { inst:string; wd?:string|null; at:string; ip?:string|null }
 
 type Admin = { id:string; name:string; username:string; maxDevices:number; maxVouchersTotal:number; totalVouchersGenerated:number }
-type Device = { id:string; name:string; gatewayId:string; location:string; isActive:boolean; routerIp:string; wifiSSID:string; description?:string; gatewayInterface?:string; externalInterface?:string; clientTimeout?:number; httpMaxConn?:number; tunnelPort?:number; _count:{sessions:number;vouchers:number} }
+type Device = { id:string; name:string; gatewayId:string; location:string; isActive:boolean; routerIp:string; wifiSSID:string; description?:string; gatewayInterface?:string; externalInterface?:string; clientTimeout?:number; httpMaxConn?:number; tunnelPort?:number; scriptReport?:ScriptReport|null; _count:{sessions:number;vouchers:number} }
 type Session = { id:string; macAddress:string; ipAddress:string; dataInMB:number; dataOutMB:number; timeUsedMin:number; startedAt:string; entryMethod?:string; voucher:{code:string;dataLimitMB:number|null;timeLimitMin:number|null;dataUsedMB:number;timeUsedMin:number;voucherType?:string} }
 type Voucher = { id:string; code:string; status:string; packageType:string; voucherType:string; dataLimitMB:number|null; timeLimitMin:number|null; speedLimitMbps:number|null; dataUsedMB:number; timeUsedMin:number; usageCount:number; maxUsageCount:number; createdAt:string }
 type PortalSettings = { placeName:string; wifiName:string; logoEmoji:string; codeMinLength:number; codeMaxLength:number; allowManual:boolean; allowNFC:boolean; allowQR:boolean }
@@ -380,6 +382,47 @@ function PlanRequestTab({ adminId }: { adminId: string }) {
   )
 }
 
+/* ═════════════ حالة سكربت الراوتر — محدّث / محتاج تحديث ═════════════ */
+const scriptUpToDate=(d:Device)=>d.scriptReport?.inst===INSTALL_SCRIPT_VERSION
+
+function ScriptStatusBadge({d}:{d:Device}){
+  const ok=scriptUpToDate(d)
+  const inst=d.scriptReport?.inst
+  const label=ok
+    ?`🛡️ سكربت v${inst} محدّث`
+    :inst&&inst!=='0'
+      ?`⚠️ سكربت v${inst} قديم`
+      :'⚠️ محتاج السكربت الجديد'
+  return (
+    <span title={ok?'الراوتر شغّل أحدث نسخة من السكربت':'شغّل السكربت الجديد من تاب ⚙️ الإعداد — دقيقة واحدة'}
+      style={{padding:'3px 9px',borderRadius:20,fontSize:10,fontWeight:700,whiteSpace:'nowrap',
+        background:ok?'rgba(0,230,118,0.12)':'rgba(245,158,11,0.12)',
+        color:ok?'#00E676':'#f59e0b',
+        border:`1px solid ${ok?'rgba(0,230,118,0.25)':'rgba(245,158,11,0.35)'}`}}>
+      {label}
+    </span>
+  )
+}
+
+/* بانر "السكربت اتغيّر" — بيظهر لو فيه أي راوتر نسخته أقدم من نسخة السيرفر */
+function ScriptUpdateBanner({devices}:{devices:Device[]}){
+  const stale=devices.filter(d=>!scriptUpToDate(d))
+  if(stale.length===0) return null
+  return (
+    <div style={{padding:'12px 16px',borderRadius:12,marginBottom:14,background:'rgba(245,158,11,0.08)',border:'1px solid rgba(245,158,11,0.35)'}}>
+      <div style={{fontSize:13,fontWeight:800,color:'#f59e0b',marginBottom:5}}>
+        ⚠️ السكربت اتغيّر — النسخة الجديدة v{INSTALL_SCRIPT_VERSION} وعليها {stale.length} راوتر محتاج تشغيلها
+      </div>
+      <div style={{fontSize:11,color:'#6B8CAE',lineHeight:1.9}}>
+        <strong style={{color:'#E2F0FB'}}>السكربت بيتنزّل من السستم مش من برّه:</strong> افتح تاب ⚙️ الإعداد → انسخ أمر SSH بتاع الجهاز → الصقه في الراوتر → استنى ✅ (دقيقة واحدة لكل راوتر).
+        بعد التشغيل الراوتر بيسجّل نسخته لوحده والعلامة هتبقى 🛡️ خضرا.
+        <br/><span style={{color:'#354E6A'}}>ليه اتغير؟ v{INSTALL_SCRIPT_VERSION} ({INSTALL_SCRIPT_DATE}): {INSTALL_SCRIPT_CHANGES}</span>
+      </div>
+      <div style={{fontSize:11,color:'#f59e0b',marginTop:6,fontWeight:700}}>الراوترات المتأثرة: {stale.map(d=>d.name).join('، ')}</div>
+    </div>
+  )
+}
+
 function RouterSetupTab({ devices }: { devices: Device[] }) {
   const [sel,setSel]=useState<Device|null>(null); const [copied,setCopied]=useState('')
   const [scriptText,setScriptText]=useState('')
@@ -399,6 +442,14 @@ function RouterSetupTab({ devices }: { devices: Device[] }) {
 
   return (
     <div>
+      {/* نسخة السكربت الرسمي — بتنزّل من السستم بس */}
+      <div style={{...S.card,marginBottom:12,padding:'12px 18px',border:'1px solid rgba(0,230,118,0.25)',background:'rgba(0,230,118,0.04)'}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:8}}>
+          <div style={{fontSize:13,fontWeight:800,color:'#00E676'}}>🛡️ السكربت الرسمي من السستم — النسخة v{INSTALL_SCRIPT_VERSION} ({INSTALL_SCRIPT_DATE})</div>
+          <div style={{fontSize:11,color:'#6B8CAE'}}>أي راوتر مكتوب جنبه ⚠️ — شغّل عليه أمر التسطيب مرة واحدة وهو يتحدّث ويسجّل نفسه</div>
+        </div>
+      </div>
+      <ScriptUpdateBanner devices={devices}/>
       {devices.length>1&&(
         <div style={{display:'flex',flexWrap:'wrap',gap:8,marginBottom:14}}>
           {devices.map(d=>(
@@ -421,9 +472,10 @@ function RouterSetupTab({ devices }: { devices: Device[] }) {
                     {d.name}
                     {d.tunnelPort&&<span style={{fontSize:11,color:'#6B8CAE',fontFamily:'monospace',fontWeight:400}}>tunnel:{d.tunnelPort}</span>}
                   </div>
-                  <div style={{fontSize:11,color:'#6B8CAE',marginTop:4,display:'flex',gap:12,flexWrap:'wrap'}}>
+                  <div style={{fontSize:11,color:'#6B8CAE',marginTop:4,display:'flex',gap:12,flexWrap:'wrap',alignItems:'center'}}>
                     {d.routerIp&&<span>🌐 {d.routerIp}</span>}
                     {d.wifiSSID&&<span>📶 {d.wifiSSID}</span>}
+                    <ScriptStatusBadge d={d}/>
                   </div>
                 </div>
                 <a href={`/portal?gw_id=${d.gatewayId}`} target="_blank" style={{...S.btn('#111B2D','#00D4FF'),border:'1px solid #1C2A40',textDecoration:'none',fontSize:12,padding:'8px 14px'}}>👁️ معاينة</a>
@@ -724,6 +776,7 @@ export default function DashboardPage() {
 
           {tab==='devices'&&(
             <div>
+              <ScriptUpdateBanner devices={devices}/>
               <div style={{...S.card,marginBottom:14}}>
                 <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:10}}>
                   <h3 style={{fontSize:15,fontWeight:700,color:'#E2F0FB'}}>🖥️ الأجهزة ({devices.length}/{admin.maxDevices})</h3>
@@ -752,6 +805,7 @@ export default function DashboardPage() {
                     </div>
                     <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:7,flexShrink:0}}>
                       <span style={{padding:'3px 9px',borderRadius:20,fontSize:11,background:d.isActive?'rgba(0,230,118,0.12)':'rgba(255,68,68,0.12)',color:d.isActive?'#00E676':'#FF4444',border:`1px solid ${d.isActive?'rgba(0,230,118,0.25)':'rgba(255,68,68,0.25)'}`}}>{d.isActive?'● نشط':'● متوقف'}</span>
+                      <ScriptStatusBadge d={d}/>
                       <button onClick={()=>setTab('config')} style={{padding:'5px 10px',background:'#111B2D',border:'1px solid #1C2A40',borderRadius:8,color:'#6B8CAE',fontFamily:'Cairo,sans-serif',fontSize:11,cursor:'pointer'}}>⚙️ سكريبت</button>
                     </div>
                   </div>
@@ -810,11 +864,12 @@ export default function DashboardPage() {
                   )}
                 </div>
                 <div>
-                  <label style={S.label}>عدد حروف الكود: {gen.codeLength}</label>
+                  <label style={S.label}>عدد أرقام الكود (4 – 32) — اخترت "أرقام فقط"؟ يطلع كلها أرقام</label>
                   <div style={{display:'flex',alignItems:'center',gap:8}}>
-                    <button onClick={()=>setGen(g=>({...g,codeLength:Math.max(4,g.codeLength-4)}))} style={{width:36,height:36,background:'#1C2A40',border:'none',borderRadius:8,color:'#E2F0FB',fontSize:18,cursor:'pointer',flexShrink:0}}>−</button>
-                    <input type="range" min={4} max={32} step={4} value={gen.codeLength} onChange={e=>setGen({...gen,codeLength:+e.target.value})} style={{flex:1,accentColor:'#0088CC'}}/>
-                    <button onClick={()=>setGen(g=>({...g,codeLength:Math.min(32,g.codeLength+4)}))} style={{width:36,height:36,background:'#1C2A40',border:'none',borderRadius:8,color:'#E2F0FB',fontSize:18,cursor:'pointer',flexShrink:0}}>+</button>
+                    <button onClick={()=>setGen(g=>({...g,codeLength:Math.max(4,g.codeLength-1)}))} style={{width:36,height:36,background:'#1C2A40',border:'none',borderRadius:8,color:'#E2F0FB',fontSize:18,cursor:'pointer',flexShrink:0}}>−</button>
+                    <input type="range" min={4} max={32} step={1} value={gen.codeLength} onChange={e=>setGen({...gen,codeLength:+e.target.value})} style={{flex:1,accentColor:'#0088CC'}}/>
+                    <button onClick={()=>setGen(g=>({...g,codeLength:Math.min(32,g.codeLength+1)}))} style={{width:36,height:36,background:'#1C2A40',border:'none',borderRadius:8,color:'#E2F0FB',fontSize:18,cursor:'pointer',flexShrink:0}}>+</button>
+                    <input type="number" min={4} max={32} value={gen.codeLength} onChange={e=>{const v=+e.target.value;if(!isNaN(v))setGen({...gen,codeLength:Math.max(4,Math.min(32,v))})}} style={{...S.input,width:72,textAlign:'center',fontSize:15,fontWeight:700,color:'#00D4FF',padding:'8px',flexShrink:0}}/>
                   </div>
                   <div style={{fontSize:11,color:'#354E6A',marginTop:4,fontFamily:'monospace',textAlign:'center'}}>مثال: {Array(Math.ceil(gen.codeLength/4)).fill('XXXX').join('-').slice(0,gen.codeLength+Math.ceil(gen.codeLength/4)-1)}</div>
                 </div>

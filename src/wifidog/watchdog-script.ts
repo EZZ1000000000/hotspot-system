@@ -24,14 +24,15 @@
 // (rate-limited كل 30 دقيقة) عشان ميضغطش الراوتر أو الفيد.
 // ═══════════════════════════════════════════════════════════
 
-export const WATCHDOG_VERSION = '2'
+export const WATCHDOG_VERSION = '3'
 
 export function buildWatchdogScript(): string {
   return `#!/bin/sh
-# 🛡️ الحارس الذاتي v2 (WFD_WD_VERSION=2) — شغال كل 5 دقايق من الكرون
+# 🛡️ الحارس الذاتي v3 (WFD_WD_VERSION=3) — شغال كل 5 دقايق من الكرون
 # يصلح لوحده: uhttpd / wifidog / قاعدة الاعتراض / باك-إند iptables المعطوب
 # وبيحدّث نفسه من السيرفر كل ساعة — أي إصلاح جديد بيوصل لكل الراوترات لوحده
-WFD_WD_VERSION="2"
+# وبيبلّغ عن نسخة السكربت المركّبة كل ساعة — عشان اللوحة تعرف مين محدّث ومين لأ
+WFD_WD_VERSION="3"
 LOG=/tmp/hotspot_watchdog.log
 CONF=/etc/wifidog.conf
 
@@ -172,6 +173,12 @@ fi
 NOW=$(date +%s); TS=$(cat /tmp/wd_upd_ts 2>/dev/null); case "$TS" in ''|*[!0-9]*) TS=0 ;; esac
 if [ $((NOW - TS)) -ge 3600 ] && [ -n "$SRV" ]; then
   date +%s > /tmp/wd_upd_ts
+  # ── [4a] تقرير النسخ للسيرفر — اللوحة تعرف إن الراوتر شغال وأي نسخة عنده
+  #  inst = نسخة سكربت التسطيب (من /etc/hotspot-script-version) — 0 = قديم/غير معروف
+  INST=$(cat /etc/hotspot-script-version 2>/dev/null | tr -d '[:space:]')
+  case "$INST" in ''|*[!0-9]*) INST=0 ;; esac
+  uclient-fetch -q -T 15 -O /dev/null --no-check-certificate "https://\${SRV}/api/router/report-script?gw_id=\${GW}&inst=\${INST}&wd=\${WFD_WD_VERSION}" 2>/dev/null \
+    || wget -q -T 15 -O /dev/null --no-check-certificate "https://\${SRV}/api/router/report-script?gw_id=\${GW}&inst=\${INST}&wd=\${WFD_WD_VERSION}" 2>/dev/null
   F=/tmp/wd_new.sh
   uclient-fetch -q -T 20 -O "$F" --no-check-certificate "https://\${SRV}/api/router/watchdog" 2>/dev/null \\
     || wget -q -T 20 -O "$F" --no-check-certificate "https://\${SRV}/api/router/watchdog" 2>/dev/null

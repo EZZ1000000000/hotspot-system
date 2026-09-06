@@ -41,7 +41,27 @@ export async function GET(req: NextRequest) {
     where: { hotspotAdminId: adminId },
     include: { _count: { select: { sessions: true, vouchers: true } } },
   })
-  return NextResponse.json(devices)
+
+  // ── تقارير نسخة السكربت (script-report:<gatewayId> من KeyValueStore) ──
+  // الراوتر بيبلّغ عن نسخته من سكربت التسطيب + الحارس — واللوحة بتحطها
+  // جوار كل جهاز: 🛡️ محدّث / ⚠️ محتاج تحديث
+  try {
+    const reports = await prisma.keyValueStore.findMany({
+      where: { key: { in: devices.map(d => `script-report:${d.gatewayId}`) } },
+    })
+    const byGw = new Map<string, any>()
+    for (const r of reports) {
+      const gw = r.key.replace('script-report:', '')
+      try { byGw.set(gw, JSON.parse(r.value)) } catch {}
+    }
+    return NextResponse.json(devices.map(d => ({
+      ...d,
+      scriptReport: byGw.get(d.gatewayId) || null,
+    })))
+  } catch {
+    // لو التقارير مش متاحة — نرجع الأجهزة عادي من غيرها
+    return NextResponse.json(devices)
+  }
 }
 
 export async function POST(req: NextRequest) {

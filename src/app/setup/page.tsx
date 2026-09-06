@@ -1,13 +1,16 @@
 'use client'
 import { useState, useEffect, useCallback } from 'react'
+import { INSTALL_SCRIPT_VERSION, INSTALL_SCRIPT_DATE } from '@/wifidog/script-meta'
 
 /* ════════════════════════════ الأنواع ════════════════════════════ */
+type ScriptReport = { inst:string; wd?:string|null; at:string; ip?:string|null }
 type Device = {
   id: string; name: string; gatewayId: string
   routerIp?: string; wifiSSID?: string | null; location?: string | null
   isActive: boolean
   gatewayInterface?: string; externalInterface?: string; clientTimeout?: number
   tunnelPort?: number | null
+  scriptReport?: ScriptReport | null
   _count?: { sessions: number; vouchers: number }
 }
 type Admin = {
@@ -90,6 +93,9 @@ function DeviceScript({ device, serverKey, serverUrl, vpsIp }: {
   const copy = async () => { await copyText(script); setCopied(true); setTimeout(() => setCopied(false), 2500) }
   const download = () => { const b = new Blob([script], { type: 'text/plain' }); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = `install-${device.gatewayId}.sh`; a.click() }
 
+  const scUpToDate = device.scriptReport?.inst === INSTALL_SCRIPT_VERSION
+  const scInst = device.scriptReport?.inst
+
   return (
     <div style={{ ...S.card, marginBottom: 16 }}>
 
@@ -98,6 +104,18 @@ function DeviceScript({ device, serverKey, serverUrl, vpsIp }: {
         <div>
           <div style={{ fontSize: 15, fontWeight: 800, color: '#E2F0FB', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             {device.name} <ServerBadge serverKey={serverKey} />
+            <span style={{
+              padding: '3px 10px', borderRadius: 20, fontSize: 10, fontWeight: 700,
+              background: scUpToDate ? 'rgba(0,230,118,0.12)' : 'rgba(245,158,11,0.12)',
+              color: scUpToDate ? '#00E676' : '#f59e0b',
+              border: `1px solid ${scUpToDate ? 'rgba(0,230,118,0.25)' : 'rgba(245,158,11,0.35)'}`,
+            }}>
+              {scUpToDate
+                ? `🛡️ سكربت v${scInst} محدّث`
+                : scInst && scInst !== '0'
+                  ? `⚠️ سكربت v${scInst} قديم — النسخة الحالية v${INSTALL_SCRIPT_VERSION}`
+                  : `⚠️ محتاج تشغيل السكربت v${INSTALL_SCRIPT_VERSION}`}
+            </span>
           </div>
           <div style={{ fontSize: 11, color: '#6B8CAE', marginTop: 3, display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
             <span>🌐 {device.routerIp || '192.168.1.1'}</span>
@@ -562,6 +580,16 @@ export default function SetupPage() {
                   style={{ ...S.btn('#0E2A1C', '#00E676'), border: '1px solid rgba(0,230,118,0.35)' }}>
                   🔁 تبديل سيرفر الكافيه
                 </button>
+              </div>
+
+              {/* نسخة السكربت الرسمي — بتنزل من السستم بس */}
+              <div style={{ ...S.card, marginBottom: 16, padding: '12px 18px', border: '1px solid rgba(0,230,118,0.25)', background: 'rgba(0,230,118,0.04)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <div style={{ fontSize: 13, fontWeight: 800, color: '#00E676' }}>
+                  🛡️ السكربت الرسمي من السستم — النسخة v{INSTALL_SCRIPT_VERSION} ({INSTALL_SCRIPT_DATE})
+                </div>
+                <div style={{ fontSize: 11, color: '#6B8CAE' }}>
+                  السكربت بيطلع من هنا مباشرة — انسخ الأمر والصقه في SSH الراوتر. لو الراوتر مكتوب جنبه ⚠️ شغّله مرة واحدة ويتحدّث ويسجّل نفسه
+                </div>
               </div>
 
               {/* أجهزة الكافيه */}

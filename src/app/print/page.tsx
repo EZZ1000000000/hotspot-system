@@ -440,6 +440,8 @@ function PrintContent() {
   const [biz,      setBiz]      = useState(params.get('biz') || '')
   const [logo,     setLogo]     = useState('📦')
   const [cols,     setCols]     = useState(3)
+  const [cardW,    setCardW]    = useState(0)   // عرض الكارت مم — 0 = تلقائي
+  const [cardH,    setCardH]    = useState(0)   // طول الكارت مم — 0 = تلقائي
   const [showQR,   setShowQR]   = useState(false)
   const [noSep,    setNoSep]    = useState(false)
   const [loading,  setLoading]  = useState(false)
@@ -494,6 +496,11 @@ html, body {
   grid-template-columns: repeat(${cols}, 1fr);
   gap: 7px;
   padding: 7px;
+}
+.grid > div {
+  ${cardW>0?`width: ${cardW}mm !important;`:''}${cardH>0?`
+  height: ${cardH}mm !important;
+  overflow: hidden;`:''}
 }
 @media print {
   html, body { background: white !important; }
@@ -623,8 +630,33 @@ ${cardsHTML}
           <div style={Scrd}>
             <div style={{fontSize:12,fontWeight:700,color:'#E2F0FB',marginBottom:9}}>⚙️ خيارات</div>
             <div style={{marginBottom:10}}>
-              <label style={Slbl}>عدد الأعمدة: {cols}</label>
-              <input type="range" min={1} max={4} value={cols} onChange={e=>setCols(+e.target.value)} style={{width:'100%',accentColor:'#0088CC'}}/>
+              <label style={Slbl}>عدد الأعمدة: {cols} (لحد 8)</label>
+              <input type="range" min={1} max={8} value={cols} onChange={e=>setCols(+e.target.value)} style={{width:'100%',accentColor:'#0088CC'}}/>
+              <div style={{display:'flex',gap:4,marginTop:6,flexWrap:'wrap'}}>
+                {[2,3,4,5,6,8].map(n=>(
+                  <button key={n} onClick={()=>setCols(n)} style={{flex:1,padding:'4px 0',background:cols===n?'#0088CC':'#111B2D',border:`1px solid ${cols===n?'#0088CC':'#1C2A40'}`,borderRadius:6,color:cols===n?'#000':'#6B8CAE',fontFamily:'Cairo,sans-serif',fontSize:10,cursor:'pointer',fontWeight:700}}>{n}</button>
+                ))}
+              </div>
+            </div>
+            <div style={{marginBottom:10}}>
+              <label style={Slbl}>📐 مقاس الكارت (مم) — صفر = تلقائي</label>
+              <div style={{display:'flex',gap:6,marginBottom:6}}>
+                <div style={{flex:1}}>
+                  <label style={{...Slbl,fontSize:9}}>العرض (مم)</label>
+                  <input type="number" min={0} max={200} value={cardW} onChange={e=>setCardW(Math.max(0,Math.min(200,+e.target.value||0)))} style={{...Sinp,textAlign:'center',color:'#00D4FF',fontWeight:700}}/>
+                </div>
+                <div style={{flex:1}}>
+                  <label style={{...Slbl,fontSize:9}}>الطول (مم)</label>
+                  <input type="number" min={0} max={200} value={cardH} onChange={e=>setCardH(Math.max(0,Math.min(200,+e.target.value||0)))} style={{...Sinp,textAlign:'center',color:'#00D4FF',fontWeight:700}}/>
+                </div>
+              </div>
+              <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+                <button onClick={()=>{setCardW(0);setCardH(0)}} style={{flex:1,padding:'4px 0',background:cardW===0&&cardH===0?'#0088CC':'#111B2D',border:'1px solid #1C2A40',borderRadius:6,color:cardW===0&&cardH===0?'#000':'#6B8CAE',fontFamily:'Cairo,sans-serif',fontSize:9,cursor:'pointer',fontWeight:700}}>تلقائي</button>
+                <button onClick={()=>{setCardW(54);setCardH(86)}} style={{flex:1,padding:'4px 0',background:cardW===54&&cardH===86?'#0088CC':'#111B2D',border:'1px solid #1C2A40',borderRadius:6,color:cardW===54&&cardH===86?'#000':'#6B8CAE',fontFamily:'Cairo,sans-serif',fontSize:9,cursor:'pointer',fontWeight:700}}>كارت بنكي</button>
+                <button onClick={()=>{setCardW(50);setCardH(30)}} style={{flex:1,padding:'4px 0',background:cardW===50&&cardH===30?'#0088CC':'#111B2D',border:'1px solid #1C2A40',borderRadius:6,color:cardW===50&&cardH===30?'#000':'#6B8CAE',fontFamily:'Cairo,sans-serif',fontSize:9,cursor:'pointer',fontWeight:700}}>مستطيل صغير</button>
+                <button onClick={()=>{setCardW(63.5);setCardH(88)}} style={{flex:1,padding:'4px 0',background:cardW===63.5&&cardH===88?'#0088CC':'#111B2D',border:'1px solid #1C2A40',borderRadius:6,color:cardW===63.5&&cardH===88?'#000':'#6B8CAE',fontFamily:'Cairo,sans-serif',fontSize:9,cursor:'pointer',fontWeight:700}}>بوكر</button>
+              </div>
+              {(cardW>0||cardH>0)&&<div style={{fontSize:9,color:'#354E6A',marginTop:4,textAlign:'center'}}>الكارت هيطبع بمقاس ثابت {cardW>0?cardW+'مم عرض':'—'} × {cardH>0?cardH+'مم طول':'—'}</div>}
             </div>
             {[
               ...(isSA ? [{val:showQR,set:setShowQR,label:'📷 إضافة QR Code'}] : []),
@@ -659,7 +691,11 @@ ${cardsHTML}
           {!loading && vouchers.length>0 && (
             <div style={{background:DARK_TEMPLATES.has(t)?'#111':'white',borderRadius:12,padding:14}}>
               <div style={{display:'grid',gridTemplateColumns:`repeat(${cols},1fr)`,gap:9}}>
-                {vouchers.map(v=><PreviewCard key={v.id} v={v}/>)}
+                {vouchers.map(v=>(
+                  <div key={v.id} style={{width:cardW>0?cardW+'mm':undefined,height:cardH>0?cardH+'mm':undefined,overflow:cardH>0?'hidden':undefined}}>
+                    <PreviewCard v={v}/>
+                  </div>
+                ))}
               </div>
             </div>
           )}
