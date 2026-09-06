@@ -528,16 +528,21 @@ sed -i "s/__UPORT__/$UPORT/; s/__GWIP__/$GWIP/g; s/__EXTIF__/$EXTIF/g; s/__GWIF_
 echo "✅ wifidog.conf اتكتبت (القديمة محفوظة في /etc/wifidog.conf.bak)"
 
 # ────────────────────────────────────────────────
-# [5/9] اسم الشبكة (2.4GHz + 5GHz)
+# [5/9] هوية الهوت سبوت — اسم الشبكة + اسم صفحة الدخول
 # ────────────────────────────────────────────────
-if [ -n "$WANT_SSID" ] && uci -q show wireless >/dev/null 2>&1; then
-  say "[5/9] تغيير اسم الشبكة إلى: $WANT_SSID"
+# الاسم الرسمي بيتجاب من السيرفر وقت التشغيل (مش الاسم المحفور وقت توليد السكربت)
+# عشان لو الأدمن غيّر الاسم في اللوحة بعد ما نزّل السكربت — الأحدث هو اللي يتطبق
+# نفس الاسم ده هو اللي بيظهر في صفحة الدخول — الاتنين من نفس المصدر
+APPLY_SSID(){
+  S="$1"
+  [ -z "$S" ] && return 0
+  uci -q show wireless >/dev/null 2>&1 || return 0
   i=0
   while uci -q show wireless.@wifi-iface[$i] >/dev/null 2>&1; do
     MODE=$(uci -q get wireless.@wifi-iface[$i].mode 2>/dev/null)
     if [ "$MODE" = "ap" ] || [ -z "$MODE" ]; then
-      uci set wireless.@wifi-iface[$i].ssid="$WANT_SSID"
-      echo "   ✔️  واجهة [$i] (mode=\${MODE:-ap})"
+      uci set wireless.@wifi-iface[$i].ssid="$S"
+      echo "   ✔️  واجهة [$i] (mode=\${MODE:-ap}) → $S"
     else
       echo "   ⏭️  واجهة [$i] mode=$MODE — اتسابت (واجهة uplink)"
     fi
@@ -545,10 +550,38 @@ if [ -n "$WANT_SSID" ] && uci -q show wireless >/dev/null 2>&1; then
   done
   uci commit wireless
   wifi reload >/dev/null 2>&1
-  echo "✅ اسم الشبكة اتطبق"
+}
+
+say "[5/9] هوية الهوت سبوت — اسم الشبكة وصفحة الدخول (من السيرفر مباشرة)..."
+RESP_ID=$(https_get "https://\${SRV}/api/router/identity?gw_id=\${GW_ID}" 2>/dev/null | head -n1 | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+# حماية: لو الرد صفحة خطأ (HTML/JSON) أو طوله غير منطقي → نتجاهله
+case "$RESP_ID" in
+  *"<"*|*">"*|*"{"*|*"}"*|*'"'*|*"'"*|*"%"*|*"="*|*"&"*|*";"*) RESP_ID="" ;;
+esac
+[ "\${#RESP_ID}" -le 64 ] || RESP_ID=""
+[ "$RESP_ID" = "unknown" ] && RESP_ID=""
+
+if [ -n "$RESP_ID" ]; then
+  echo "   📡 الاسم الرسمي من السيرفر: $RESP_ID"
+  if [ -n "$WANT_SSID" ] && [ "$RESP_ID" != "$WANT_SSID" ]; then
+    echo "   ℹ️  الاسم اتعدل في اللوحة بعد توليد السكربت — بنطبّق الأحدث"
+  fi
+  APPLY_SSID "$RESP_ID"
+  echo "✅ اسم الشبكة وصفحة الدخول بقى: $RESP_ID"
+elif [ -n "$WANT_SSID" ]; then
+  echo "   ⚠️  السيرفر مجابش الاسم — بنطبّق الاسم المحفور في السكربت: $WANT_SSID"
+  APPLY_SSID "$WANT_SSID"
+  echo "✅ اسم الشبكة اتطبق: $WANT_SSID"
 else
-  say "[5/9] اسم الشبكة — مفيش تغيير مطلوب"
+  echo "   ⏭️  مفيش اسم محدد — أسماء الشبكات الحالية زي ما هي"
 fi
+
+# تحديث كاش صفحة الدخول فوراً — أول موبايل يفتح البورتال يلاقي الاسم الجديد
+# (بدل ما يظهرله اسم قديم من كاش سابق لحد 5 دقايق)
+rm -f /tmp/hotspot_portal.html /tmp/hotspot_portal.ts 2>/dev/null
+UPORT=$(uci -q get uhttpd.main.listen_http 2>/dev/null | tr ' ' '\n' | grep -v '^\[' | head -n1 | sed 's/.*://')
+[ -z "$UPORT" ] && UPORT=80
+wget -q -T 30 -O /dev/null "http://127.0.0.1:$UPORT/cgi-bin/go?ep=/portal/&gw_id=$GW_ID" 2>/dev/null
 
 # ────────────────────────────────────────────────
 # [6/9] أوامر الإدارة
@@ -724,6 +757,7 @@ cat > /usr/bin/hotspot-doctor << 'DOCTOR_EOF'
 # 🩺 طبيب الهوت سبوت — فحص + إصلاح تلقائي لكل طبقات التفعيل
 # شغّله في أي وقت لاقيت الصفحة مش بتظهر أو الحالة واقفة
 GW="${gwId}"
+SRV="${serverHost}"
 say(){ echo ""; echo "==> $*"; }
 GOOD=0; BAD=0
 good(){ echo "✅ $*"; GOOD=$((GOOD+1)); }
@@ -822,6 +856,23 @@ case "$T3" in
   *) bad "صفحة الدخول مش بتتحمّل — غالباً نفس سبب رقم 1 (الإنترنت/السيرفر)" ;;
 esac
 
+# فحص اسم الهوت سبوت: صفحة الدخول لازم تطلع بالاسم الرسمي من السيرفر
+HNAME=$(wget -q -T 15 -O - "https://$SRV/api/router/identity?gw_id=$GW" 2>/dev/null | head -n 1 | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+case "$HNAME" in
+  *"<"*|*"{"*|*\"*|*"%"*|*"="*|*"&"*|*";"*|""|"unknown") HNAME="" ;;
+esac
+if [ -n "$HNAME" ] && [ -n "$T3" ]; then
+  if printf '%s' "$T3" | grep -qF "$HNAME"; then
+    good "صفحة الدخول بالاسم الرسمي: $HNAME"
+  else
+    if wget -q -T 15 -O - "https://$SRV/api/router/identity?gw_id=$GW&verbose=1" 2>/dev/null | grep -q '"hasCustomPortal":true'; then
+      bad "فيه تصميم صفحة مخصص قديم على الجهاز — الاسم الجديد مش هيظهر فيه. امسح التصميم المخصص من لوحة الإدارة"
+    else
+      bad "صفحة الدخول لسه فيها اسم قديم — شغّل: /usr/bin/hotspot-ssid-sync واستنى دقيقة واعمل الفحص تاني"
+    fi
+  fi
+fi
+
 say "[6/6] تسجيل نبضة في السيرفر"
 if wget -q -T 15 -O /dev/null "http://127.0.0.1/cgi-bin/go?ep=/ping/?gw_id=$GW" 2>/dev/null; then
   good "النبضة وصلت — الحالة هتبقى أونلاين في اللوحة حالاً"
@@ -854,19 +905,27 @@ echo "✅ أوامر الإدارة جاهزة: hotspot-status · hotspot-test �
 # ────────────────────────────────────────────────
 # [7/9] مزامنة اسم الشبكة مع السيرفر (كل 5 دقايق)
 # ────────────────────────────────────────────────
-if [ -n "$DEV_ID" ]; then
-  say "[7/9] مزامنة اسم الشبكة مع السيرفر (كل 5 دقايق)..."
+if [ -n "$GW_ID" ]; then
+  say "[7/9] مزامنة الاسم + صفحة الدخول مع السيرفر (كل 5 دقايق)..."
   cat > /usr/bin/hotspot-ssid-sync << 'SYNC_EOF'
 #!/bin/sh
 # بيجيب اسم الشبكة المطلوب من السيرفر ويطبقه على واجهات AP لو اتغير
+# الاسم الرسمي = نفس مصدر اسم صفحة الدخول (عشان الاتنين دايماً متطابقين)
 SRV="${serverHost}"
 DEV="${deviceId}"
-[ -z "$DEV" ] && exit 0
+GW="${gwId}"
+[ -z "$DEV" ] && [ -z "$GW" ] && exit 0
 https_get(){
   uclient-fetch -q -T 20 -O - --no-check-certificate "$1" 2>>/tmp/hotspot_https.log \\
     || wget -q -T 20 -O - --no-check-certificate "$1" 2>>/tmp/hotspot_https.log
 }
-WANT=$(https_get "https://\$SRV/api/admin/config?deviceId=\$DEV&type=ssid" 2>/dev/null | head -n1 | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+# الأفضل: identity بالـ gw_id (بيشتغل حتى لو الجهاز مش ليه deviceId محفور)
+# والبديل: طريقة deviceId القديمة
+if [ -n "$GW" ]; then
+  WANT=$(https_get "https://\$SRV/api/router/identity?gw_id=\$GW" 2>/dev/null | head -n1 | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+else
+  WANT=$(https_get "https://\$SRV/api/admin/config?deviceId=\$DEV&type=ssid" 2>/dev/null | head -n1 | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+fi
 [ -z "$WANT" ] && exit 0
 # حماية: لو الرد كان صفحة خطأ (HTML/JSON) ولا الاسم طوله غير منطقي
 # → منغيرش اسم الشبكة بحاجة غلط — الاسم الثابت يفضل زي ما هو
@@ -905,7 +964,7 @@ SYNC_EOF
     || { echo "*/5 * * * * /usr/bin/hotspot-ssid-sync >/dev/null 2>&1" >> /etc/crontabs/root; /etc/init.d/cron restart >/dev/null 2>&1; }
   echo "✅ المزامنة شغالة"
 else
-  say "[7/9] مزامنة اسم الشبكة — مش متاحة (الجهاز مش مربوط بحساب في السيرفر)"
+  say "[7/9] مزامنة الاسم — مش متاحة (مفيش GatewayID)"
 fi
 
 # ────────────────────────────────────────────────
