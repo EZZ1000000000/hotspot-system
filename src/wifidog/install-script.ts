@@ -5,6 +5,9 @@
 // بيغني عن: سكربت التسطيب القديم + سكربت relay-fix + سكربت setup v2
 //
 // بيقوم بكل حاجة بالترتيب:
+//   [0/9] كشف مكان كابل الإنترنت تلقائياً — لو متركب في منفذ LAN (زي LAN1)
+//         بدل WAN بيظبطه فوراً (بيمنع: الموبايل يفتح نت على طول + صفحة الدخول ماتظهر
+//         + الموبايل بيفضل عالق على "جاري الاتصال" — كل دي أعراض الكابل الغلط)
 //   [1/9] تنضيف أي إصلاحات قديمة (socat relay / /etc/hosts / dnsmasq)
 //         — دي كانت بتتعارض مع الجسر وبتكسر التفعيل
 //   [2/9] تسطيب wifidog + iptables (جدار الاعتراض) + دعم HTTPS (libustream + ca-bundle) + uhttpd
@@ -75,6 +78,7 @@ export function buildInstallScript(o: InstallScriptOptions): string {
 # ================================================================
 # ده السكريبت الوحيد اللي محتاجه — ينفع للجهاز الجديد وللجهاز القديم
 # اللي فيه مشكلة تفعيل، وآمن إعادة تشغيله أكتر من مرة. بيقوم بـ:
+#   0) يكتشف مكان كابل الإنترنت — لو متركب في منفذ LAN بدل WAN بيظبطه لوحده
 #   1) ينضّف أي إصلاحات قديمة (socat/hosts) كانت بتسبب تعارض
 #   2) يسطّب wifidog + جسر HTTPS محلي على الراوتر
 #   3) يكتب إعدادات wifidog الصحيحة (إصلاح "We did not get a valid answer")
@@ -99,6 +103,68 @@ say(){ echo ""; echo "==> $*"; }
 # ────────────────────────────────────────────────
 say "[1/9] تنضيف أي إصلاحات قديمة..."
 [ "$(id -u)" = "0" ] || { echo "❌ لازم تشغّل السكريبت بحساب root"; exit 1; }
+
+# ────────────────────────────────────────────────
+# [0/9] كشف مكان كابل الإنترنت وإصلاحه تلقائياً
+#  لو الكابل متركب في منفذ LAN (زي LAN1) الراوتر مش بيعمل NAT:
+#    → الموبايل بياخد نت من راوتر الشبكة العلوي على طول (بيفتح نت من غير صفحة دخول)
+#    → أو بيفضل عالق على "جاري الاتصال" (خادمي DHCP بيتصارعوا)
+#  الكشف: منفذ WAN فاضي + فيه كابل شغال في منفذ LAN → نحوّل المنفذ ده يبقى WAN
+# ────────────────────────────────────────────────
+have_link(){ [ -f "/sys/class/net/$1/carrier" ] && [ "$(cat /sys/class/net/$1/carrier 2>/dev/null)" = "1" ]; }
+WANDEV=$(uci -q get network.wan.device 2>/dev/null)
+[ -z "$WANDEV" ] && WANDEV=$(uci -q get network.wan.ifname 2>/dev/null | awk '{print $1}')
+[ -z "$WANDEV" ] && WANDEV=wan
+if have_link "$WANDEV"; then
+  echo "✅ كابل الإنترنت في مكانه الصح (منفذ: $WANDEV)"
+else
+  REBPORT=''
+  for P in lan1 lan2 lan3 lan4; do
+    if have_link "$P"; then REBPORT=$P; break; fi
+  done
+  if [ -n "$REBPORT" ]; then
+    say "🔌 الكابل متركب في منفذ $REBPORT — هظبطه يبقى هو منفذ الإنترنت (WAN)"
+    # 1) شيل المنفذ من جسر الشبكة الداخلية (br-lan)
+    i=0
+    while uci -q show network.@device[$i] >/dev/null 2>&1; do
+      [ "$(uci -q get network.@device[$i].name)" = "br-lan" ] && uci -q del_list network.@device[$i].ports="$REBPORT"
+      i=$((i+1))
+    done
+    # 2) واجهة WAN تبقى على المنفذ ده (من غير ما نلمس نوع الاتصال)
+    if uci -q get network.wan >/dev/null 2>&1; then
+      if uci -q get network.wan.device >/dev/null 2>&1 || [ -n "$(uci -q show network.wan 2>/dev/null | grep '\.device=')" ]; then
+        uci set network.wan.device="$REBPORT"
+      else
+        uci set network.wan.ifname="$REBPORT"
+      fi
+    else
+      uci set network.wan=interface
+      uci set network.wan.device="$REBPORT"
+      uci set network.wan.proto='dhcp'
+    fi
+    uci -q set network.wan6.device="$REBPORT" 2>/dev/null
+    uci commit network
+    # 3) تحميل الإعدادات — الجلسة ممكن تقطع لحظة وترجع
+    say "   ⏳ بحمّل إعدادات الشبكة (لو الاتصال قطع لحظة، استنى وأعد التصال)"
+    ubus call network reload >/dev/null 2>&1 || /etc/init.d/network restart >/dev/null 2>&1
+    NB=0
+    while [ $NB -lt 20 ]; do
+      sleep 3
+      ip -4 route show default 2>/dev/null | grep -q "dev $REBPORT" && break
+      NB=$((NB+1))
+    done
+    if ip -4 route show default 2>/dev/null | grep -q "dev $REBPORT"; then
+      echo "✅ الإنترنت اشتغل عن طريق منفذ $REBPORT"
+    else
+      echo "⚠️  لسه مفيش إنترنت عن طريق $REBPORT — كمّل برضه بس ممكن التسطيب يفشل لو النت مش راجع"
+      echo "   → اتأكد إن الكابل اللي في $REBPORT هو كابل المودم/الراوتر الرئيسي فعلاً"
+    fi
+    ip -4 route show default 2>/dev/null | sed 's/^/   🛣️  /'
+  else
+    echo "⚠️  مفيش كابل إنترنت في أي منفذ (لا WAN ولا LAN1-4) — وصّل كابل المودم الأول"
+  fi
+fi
+
 /etc/init.d/hotspot-relay stop    >/dev/null 2>&1
 /etc/init.d/hotspot-relay disable >/dev/null 2>&1
 rm -f /etc/init.d/hotspot-relay /usr/bin/hotspot-relay.sh
