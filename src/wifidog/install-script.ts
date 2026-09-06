@@ -195,6 +195,30 @@ if ! command -v iptables >/dev/null 2>&1; then
   opkg update >>/tmp/hotspot_opkg.log 2>&1
   opkg install iptables >>/tmp/hotspot_opkg.log 2>&1
 fi
+# ⚠️ OpenWrt 23.05+: فيد الحزم الرسمي مفيهوش حزمة "kernel" — اعتماديات موديولات
+# الجدار الناري (kmod-*) بتتحل من سجل الجهاز بس. لو السجل ناقص الإدخال (بيحصل بعد
+# فورمات مصنع) تسطيب iptables بيفشل بخطأ "cannot find dependency kernel".
+# الحل: نقرأ إصدار kernel المطلوب من الفيد نفسه ونسجله في سجل opkg ثم نعيد المحاولة
+if ! command -v iptables >/dev/null 2>&1; then
+  KVER="$(opkg info kmod-nft-compat 2>/dev/null | sed -n 's/.*kernel (=\\([^)]*\\)).*/\\1/p' | head -n1)"
+  if [ -n "$KVER" ]; then
+    STK="$(opkg status kernel 2>/dev/null | sed -n 's/^Version: //p' | head -n1)"
+    if [ -z "$STK" ]; then
+      { echo ""; echo "Package: kernel"; echo "Version: $KVER"; echo "Architecture: $(opkg print-architecture 2>/dev/null || echo mipsel_24kc)"; echo "Status: install ok installed"; echo ""; } >> /usr/lib/opkg/status
+      echo "🔧 سجلنا kernel ($KVER) في سجل opkg — كان ناقص (سبب فشل التسطيب)"
+    elif [ "$STK" != "$KVER" ]; then
+      sed -i "/^Package: kernel\\$/,/^\\$/s/^Version: .*/Version: $KVER/" /usr/lib/opkg/status
+      echo "🔧 عدّلنا إصدار kernel المسجل من [$STK] إلى [$KVER]"
+    fi
+    opkg install iptables >>/tmp/hotspot_opkg.log 2>&1
+  fi
+fi
+if ! command -v iptables >/dev/null 2>&1; then
+  for PKG2 in iptables-nft xtables-nft kmod-nft-compat kmod-nft-core kmod-nft-nat kmod-nf-ipt kmod-ipt-core kmod-ipt-nat kmod-ipt-conntrack; do
+    opkg install --force-depends "$PKG2" >>/tmp/hotspot_opkg.log 2>&1
+  done
+  command -v iptables >/dev/null 2>&1 || ln -sf /usr/sbin/xtables-nft-multi /usr/sbin/iptables 2>/dev/null
+fi
 command -v iptables >/dev/null 2>&1 \\
   && echo "✅ iptables جاهزة (جدار الاعتراض)" \\
   || echo "⚠️  iptables مش متسطبة — صفحة الدخول مش هتظهر للموبايلات (شغّل: opkg update && opkg install iptables)"
@@ -706,7 +730,7 @@ else
 fi
 
 say "[5/6] محاكاة موبايل — من wifidog لحد صفحة الدخول"
-H1=$(wget -S -T 10 -O /dev/null "http://127.0.0.1:2060/login/?gw_id=$GW" 2>&1)
+H1=$(printf "GET /login/?gw_id=$GW HTTP/1.0\\r\\nHost: 127.0.0.1\\r\\n\\r\\n" | nc -w 5 127.0.0.1 2060 2>/dev/null | head -n 1)
 if echo "$H1" | grep -qi '302'; then
   good "wifidog بيحوّل الموبايل لصفحة الدخول (302)"
 else
