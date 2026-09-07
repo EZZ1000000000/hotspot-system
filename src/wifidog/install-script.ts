@@ -323,6 +323,12 @@ EP="\${EP%/}"   # شيل الـ trailing slash اللي wifidog بيضيفها (
 case "$EP" in
   ping|auth)
     # طلبات داخلية من wifidog نفسه — نمرر رد السيرفر الخام
+    # ⚠️ فرض هوية الجهاز: wifidog ممكن يفضل ماسك GatewayID قديم في الذاكرة
+    # بعد تحويل الجهاز من كافيه لتاني — بنبدّل أي gw_id جاي منه بالصح
+    case "\$REST" in
+      *gw_id=*) REST=\$(printf '%s' "\$REST" | sed "s/gw_id=[^&]*/gw_id=${gwId}/") ;;
+      *) REST="\${REST}&gw_id=${gwId}" ;;
+    esac
     RESP=$(https_get "https://\${SRV}/api/wifidog/\${EP}?\${REST}")
     echo "Content-Type: text/plain"
     echo ""
@@ -348,6 +354,12 @@ case "$EP" in
     ;;
   login)
     # wifidog حوّل متصفح الموبايل هنا — بنحوّله لصفحة البورتال المحلية
+    # ⚠️ فرض هوية الجهاز قبل التحويل — عشان الصفحة نفسها تشيل الهوية الصح
+    # حتى لو عملية wifidog الشغالة لسه ماسكة إعدادات كافيه قديم
+    case "\$REST" in
+      *gw_id=*) REST=\$(printf '%s' "\$REST" | sed "s/gw_id=[^&]*/gw_id=${gwId}/") ;;
+      *) REST="gw_id=${gwId}&\${REST}" ;;
+    esac
     # 3 طبقات حماية عشان مستحيل تطلع صفحة بيضا:
     #   1) Status: 302 + Location مطلق (المتصفح يتابعها فوراً)
     #   2) meta refresh في HTML (لو المتصفح تجاهل الـ 302)
@@ -395,8 +407,13 @@ case "$EP" in
     if [ "\$REQUEST_METHOD" = "POST" ] && [ -n "\$CONTENT_LENGTH" ]; then
       BODY=\$(head -c "\$CONTENT_LENGTH" 2>/dev/null)
     fi
-    # ضمان إضافي: لو الصفحة بعتت gatewayId فاضي أو null نحط بتاع الجهاز
-    BODY=\$(printf '%s' "$BODY" | sed "s|\"gatewayId\":null|\"gatewayId\":\"${gwId}\"|g; s|\"gatewayId\":\"\"|\"gatewayId\":\"${gwId}\"|g")
+    # ⚠️ فرض هوية الجهاز في طلب التفعيل — أهم سطر في الجسر:
+    # مهما كان الـ gatewayId اللي جاي من الصفحة (قديم أو فاضي أو ناقص)
+    # بنستبدله بهوية الجهاز دي — فالتفعيل عمره ما يروح لجهاز غلط
+    case "\$BODY" in
+      *gatewayId*) BODY=\$(printf '%s' "$BODY" | sed "s|\\"gatewayId\\":[^,}]*|\\"gatewayId\\":\\"${gwId}\\"|g") ;;
+      *) BODY=\$(printf '%s' "$BODY" | sed 's/} */,"gatewayId":"${gwId}"}/') ;;
+    esac
     RESP=\$(https_post "https://\${SRV}/api/portal/login" "\$BODY")
     echo "Content-Type: application/json"
     echo ""
@@ -674,7 +691,20 @@ fi
 if pgrep wifidog >/dev/null 2>&1; then
   echo "✅ 4) خدمة wifidog: شغالة"
 else
-  echo "❌ 4) خدمة wifidog: واقفة — جرب: /etc/init.d/wifidog restart"
+  echo "❌ 4) خدمة wifidog: واقفة — جرب: hotspot-restart"
+fi
+
+# 4b) الهوية الفعلية لـ wifidog — لو عملية قديمة ماسكة هوية كافيه قديم
+# التفعيل هيبقى بيهوية غلط والكروت هتفشل بـ"الجهاز غير موجود"
+RUNGW=$(printf "GET /login/ HTTP/1.0\\r\\nHost: 127.0.0.1\\r\\n\\r\\n" | nc -w 5 127.0.0.1 2060 2>/dev/null | sed -n 's/.*[?&]gw_id=\\([^&]*\\).*/\\1/p' | head -n1 | tr -d '\\r')
+if [ -n "$RUNGW" ] && [ "$RUNGW" != "$GW" ]; then
+  echo "❌ 4b) الهوية الفعلية لـ wifidog: قديمة! ($RUNGW والصح $GW)"
+  echo "   → ده سبب رسالة \"الجهاز غير موجود أو غير نشط\" بعد التحويل"
+  echo "   → الإصلاح: hotspot-restart — ولو أرجعت نفس الكلام: اعمل Reboot للراوتر"
+elif [ -n "$RUNGW" ]; then
+  echo "✅ 4b) الهوية الفعلية لـ wifidog: صح ($RUNGW)"
+else
+  echo "⚠️  4b) الهوية الفعلية: مش قدرنا نحددها (nc مش متسطب غالباً) — مش مشكلة لو الباقي تمام"
 fi
 
 if netstat -tln 2>/dev/null | grep -q ':2060 '; then
@@ -747,8 +777,28 @@ chmod +x /usr/bin/hotspot-ssid
 
 cat > /usr/bin/hotspot-restart << 'ENDOFFILE'
 #!/bin/sh
-# 🔄 إعادة تشغيل wifidog
-/etc/init.d/wifidog restart && echo "تم إعادة تشغيل wifidog"
+# 🔄 إعادة تشغيل wifidog — بقوة (قتل أي عملية قديمة ماسكة إعدادات قديمة)
+/etc/init.d/wifidog stop >/dev/null 2>&1
+killall -9 wifidog >/dev/null 2>&1
+sleep 2
+killall -9 wifidog >/dev/null 2>&1
+/etc/init.d/wifidog start >/dev/null 2>&1
+sleep 3
+if pgrep wifidog >/dev/null 2>&1; then
+  echo "تم إعادة تشغيل wifidog"
+else
+  wifidog >/dev/null 2>&1 &
+  sleep 3
+  pgrep wifidog >/dev/null 2>&1 && echo "تم إعادة تشغيل wifidog" || echo "تعذر تشغيل wifidog — جرب reboot للراوتر"
+fi
+# التأكد إن الهوية الفعلية مطابقة لإعدادات wifidog.conf
+if command -v nc >/dev/null 2>&1; then
+  RUNGW=$(printf "GET /login/ HTTP/1.0\\r\\nHost: 127.0.0.1\\r\\n\\r\\n" | nc -w 5 127.0.0.1 2060 2>/dev/null | sed -n 's/.*[?&]gw_id=\\([^&]*\\).*/\\1/p' | head -n1 | tr -d '\\r')
+  CONF_GW=$(sed -n 's/^GatewayID[[:space:]]*//p' /etc/wifidog.conf 2>/dev/null | head -n1 | tr -d ' \t')
+  if [ -n "$RUNGW" ] && [ -n "$CONF_GW" ] && [ "$RUNGW" != "$CONF_GW" ]; then
+    echo "⚠️  الهوية الشغالة ($RUNGW) مختلفة عن الإعدادات ($CONF_GW) — اعمل reboot للراوتر"
+  fi
+fi
 ENDOFFILE
 chmod +x /usr/bin/hotspot-restart
 
@@ -762,6 +812,18 @@ say(){ echo ""; echo "==> $*"; }
 GOOD=0; BAD=0
 good(){ echo "✅ $*"; GOOD=$((GOOD+1)); }
 bad(){ echo "❌ $*"; BAD=$((BAD+1)); }
+# إعادة تشغيل wifidog بقوة — عشان العملية القديمة العنيدة اللي بتفضل ماسكة
+# إعدادات قديمة في الذاكرة (سبب "الجهاز غير موجود" بعد تحويل الجهاز)
+wd_frs(){
+  /etc/init.d/wifidog stop >/dev/null 2>&1
+  killall -9 wifidog >/dev/null 2>&1
+  sleep 2
+  killall -9 wifidog >/dev/null 2>&1
+  /etc/init.d/wifidog start >/dev/null 2>&1
+  sleep 4
+  pgrep wifidog >/dev/null 2>&1 || { wifidog >/dev/null 2>&1 & sleep 3; }
+  return 0
+}
 
 say "[1/6] إنترنت الراوتر نفسه"
 if ping -c 2 -W 3 8.8.8.8 >/dev/null 2>&1; then
@@ -775,9 +837,29 @@ if pgrep wifidog >/dev/null 2>&1; then
   good "wifidog شغال"
 else
   echo "   ⏳ wifidog واقف — بجرب أشغّله..."
-  /etc/init.d/wifidog restart >/dev/null 2>&1 || /etc/init.d/wifidog start >/dev/null 2>&1
+  /etc/init.d/wifidog stop >/dev/null 2>&1
+  killall -9 wifidog >/dev/null 2>&1
+  /etc/init.d/wifidog start >/dev/null 2>&1 || /etc/init.d/wifidog restart >/dev/null 2>&1
   sleep 4
   if pgrep wifidog >/dev/null 2>&1; then good "wifidog رجع شغال"; else bad "wifidog مش راضي يشتغل — ابعت سكرين من: logread | grep -i wifidog | tail -n 10"; fi
+fi
+
+# ── فحص الهوية الفعلية: عملية قديمة ماسكة GatewayID من كافيه تاني؟ ──
+# (ده اللي بيخلي الكروت تقول "الجهاز غير موجود" بعد تحويل الجهاز بين الكافيهات)
+if command -v nc >/dev/null 2>&1 && netstat -tln 2>/dev/null | grep -q ':2060 '; then
+  DGW=$(printf "GET /login/ HTTP/1.0\\r\\nHost: 127.0.0.1\\r\\n\\r\\n" | nc -w 5 127.0.0.1 2060 2>/dev/null | sed -n 's/.*[?&]gw_id=\\([^&]*\\).*/\\1/p' | head -n1 | tr -d '\\r')
+  if [ -n "$DGW" ] && [ "$DGW" != "$GW" ]; then
+    echo "   ⏳ wifidog ماسك هوية قديمة ($DGW والصح $GW) — بقتل العملية القديمة وبشغّل جديدة..."
+    /etc/init.d/wifidog stop >/dev/null 2>&1
+    killall -9 wifidog >/dev/null 2>&1
+    sleep 2
+    killall -9 wifidog >/dev/null 2>&1
+    /etc/init.d/wifidog start >/dev/null 2>&1
+    sleep 4
+    if pgrep wifidog >/dev/null 2>&1; then good "الهوية اتصلحت → الجهاز بقى مربوط بـ $GW"; else bad "الهوية اتصلحت بس wifidog مش شغال — جرب reboot للراوتر"; fi
+  elif [ -n "$DGW" ]; then
+    good "الهوية الفعلية لـ wifidog صح: $DGW"
+  fi
 fi
 
 say "[3/6] الجسر المحلي (uhttpd)"
@@ -798,7 +880,7 @@ else
   echo "   ⏳ القاعدة ناقصة — بصلّحها (إعادة تشغيل الجدار الناري ثم wifidog)..."
   /etc/init.d/firewall restart >/dev/null 2>&1
   sleep 2
-  /etc/init.d/wifidog restart >/dev/null 2>&1
+  wd_frs
   sleep 5
   if command -v iptables >/dev/null 2>&1 && iptables -t nat -S 2>/dev/null | grep -q 2060; then
     good "اتصلحت — القاعدة رجعت"
@@ -830,7 +912,7 @@ else
         fi
         /etc/init.d/firewall restart >/dev/null 2>&1
         sleep 2
-        /etc/init.d/wifidog restart >/dev/null 2>&1
+        wd_frs
         sleep 5
       fi
       iptables -t nat -F HS_T >/dev/null 2>&1; iptables -t nat -X HS_T >/dev/null 2>&1
@@ -1026,19 +1108,58 @@ fi` : `say "[8/9] SSH Tunnel — مش متظبط (تخطي)"`}
 # ────────────────────────────────────────────────
 say "[9/9] تشغيل الخدمات + الاختبار النهائي..."
 /etc/init.d/wifidog enable >/dev/null 2>&1
-/etc/init.d/wifidog restart >/dev/null 2>&1 || /etc/init.d/wifidog start >/dev/null 2>&1
-sleep 4
+# ⚠️ إعادة تشغيل بقوة: init.d لوحده ساعات بيفشل يقتل العملية القديمة
+# فتفضل عايشة بالإعدادات القديمة في الذاكرة (ده اللي كان بيخلي الجهاز
+# يفضل مربوط بالكافيه القديم بعد التحويل) — بنقتلها عنف ونشغل جديدة
+wd_force_restart(){
+  /etc/init.d/wifidog stop >/dev/null 2>&1
+  killall -9 wifidog >/dev/null 2>&1
+  sleep 2
+  killall -9 wifidog >/dev/null 2>&1
+  /etc/init.d/wifidog start >/dev/null 2>&1
+  sleep 4
+  if ! pgrep wifidog >/dev/null 2>&1; then
+    wifidog >/dev/null 2>&1 &
+    sleep 3
+  fi
+}
+wd_force_restart
 if ! pgrep wifidog >/dev/null 2>&1; then
   echo "⚠️  wifidog ماشتالش من أول محاولة — بجرب تاني واطلع السبب..."
   logread 2>/dev/null | grep -i wifidog | tail -n 6 | sed 's/^/     /'
-  /etc/init.d/wifidog restart >/dev/null 2>&1 || /etc/init.d/wifidog start >/dev/null 2>&1
-  sleep 4
+  wd_force_restart
 fi
 if pgrep wifidog >/dev/null 2>&1; then
   echo "✅ wifidog شغال"
 else
   echo "❌ wifidog مش راضي يشتغل — دي آخر رسايل الراوتر (ابعت صورة منها للدعم):"
   logread 2>/dev/null | tail -n 20 | sed 's/^/     /'
+fi
+
+# ── التأكد إن الهوية الفعلية الشغالة = هوية الجهاز دي بالظبط ──
+# بنسأل wifidog نفسه: صفّرحني بالـ 302 اللي بيحوّل بيه الموبايلات
+# ولو طلع بيوحّل بهوية كافيه قديم → قتل نهائي وإعادة تشغيل تالتة
+wd_effective_gw(){
+  printf "GET /login/ HTTP/1.0\\r\\nHost: 127.0.0.1\\r\\n\\r\\n" | nc -w 5 127.0.0.1 2060 2>/dev/null \
+    | sed -n 's/.*[?&]gw_id=\\([^&]*\\).*/\\1/p' | head -n1 | tr -d '\\r'
+}
+if command -v nc >/dev/null 2>&1; then
+  WD_GW=\$(wd_effective_gw)
+  if [ -n "\$WD_GW" ] && [ "\$WD_GW" != "\$GW_ID" ]; then
+    echo "⚠️  wifidog الشغال ماسك هوية قديمة (\$WD_GW بدل \$GW_ID) — عملية عنيدة، بقتلها نهائياً..."
+    killall -9 wifidog >/dev/null 2>&1
+    sleep 2
+    killall -9 wifidog >/dev/null 2>&1
+    wd_force_restart
+    WD_GW2=\$(wd_effective_gw)
+    if [ -n "\$WD_GW2" ] && [ "\$WD_GW2" != "\$GW_ID" ]; then
+      echo "❌ الهوية القديمة لسه متمسكتش — اعمل Reboot للراوتر (إعادة تشغيل كاملة) وكل حاجة هتظبط"
+    else
+      echo "✅ الهوية اتصلحت — الجهاز بقى مربوط بالكافيه الصح (\$GW_ID)"
+    fi
+  elif [ -n "\$WD_GW" ]; then
+    echo "✅ الهوية الفعلية لـ wifidog مطابقة: \$WD_GW"
+  fi
 fi
 
 # ── التأكد إن قواعد الاعتراض اتسجلت في الجدار الناري فعلاً ──
@@ -1057,7 +1178,7 @@ if command -v iptables >/dev/null 2>&1; then
     echo "⚠️  قواعد الاعتراض مش ظاهرة — بجرب إعادة تشغيل الجدار الناري ثم wifidog..."
     /etc/init.d/firewall restart >/dev/null 2>&1
     sleep 2
-    /etc/init.d/wifidog restart >/dev/null 2>&1
+    wd_force_restart
     sleep 5
     iptables -t nat -S 2>/dev/null | grep -q 2060 \
       && echo "✅ اتصلحت — الاعتراض شغال دلوقتي" \

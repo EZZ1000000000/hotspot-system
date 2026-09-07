@@ -24,15 +24,17 @@
 // (rate-limited كل 30 دقيقة) عشان ميضغطش الراوتر أو الفيد.
 // ═══════════════════════════════════════════════════════════
 
-export const WATCHDOG_VERSION = '3'
+export const WATCHDOG_VERSION = '4'
 
 export function buildWatchdogScript(): string {
   return `#!/bin/sh
-# 🛡️ الحارس الذاتي v3 (WFD_WD_VERSION=3) — شغال كل 5 دقايق من الكرون
+# 🛡️ الحارس الذاتي v4 (WFD_WD_VERSION=4) — شغال كل 5 دقايق من الكرون
 # يصلح لوحده: uhttpd / wifidog / قاعدة الاعتراض / باك-إند iptables المعطوب
+# + كشف العملية العنيدة: wifidog ماسك GatewayID قديم بعد تحويل الجهاز
+#   بين الكافيهات → قتل قسري وإعادة تشغيل (سبب "الجهاز غير موجود أو غير نشط")
 # وبيحدّث نفسه من السيرفر كل ساعة — أي إصلاح جديد بيوصل لكل الراوترات لوحده
 # وبيبلّغ عن نسخة السكربت المركّبة كل ساعة — عشان اللوحة تعرف مين محدّث ومين لأ
-WFD_WD_VERSION="3"
+WFD_WD_VERSION="4"
 LOG=/tmp/hotspot_watchdog.log
 CONF=/etc/wifidog.conf
 
@@ -59,10 +61,36 @@ if ! pgrep uhttpd >/dev/null 2>&1; then
   wdlog "uhttpd كان واقف → اتشغّل"
 fi
 
-# ── [2] خدمة wifidog
+# ── [2] خدمة wifidog — إعادة تشغيل بقوة (مش بس لو واقفة)
+# init.d ساعات بيفشل يقتل العملية القديمة فتفضل عايشة بالإعدادات القديمة
+wd_frs(){
+  /etc/init.d/wifidog stop >/dev/null 2>&1
+  killall -9 wifidog >/dev/null 2>&1
+  sleep 2
+  killall -9 wifidog >/dev/null 2>&1
+  /etc/init.d/wifidog start >/dev/null 2>&1
+  sleep 4
+  pgrep wifidog >/dev/null 2>&1 || { wifidog >/dev/null 2>&1 & sleep 3; }
+  return 0
+}
 if ! pgrep wifidog >/dev/null 2>&1; then
-  /etc/init.d/wifidog restart >/dev/null 2>&1 || /etc/init.d/wifidog start >/dev/null 2>&1
+  wd_frs
   wdlog "wifidog كان واقف → اتشغّل"
+else
+  # ── [2b] كشف العملية العنيدة: wifidog الشغال ماسك GatewayID قديم؟
+  # بنسأله بنفسه: إيه الهوية اللي بيحوّل بيها الموبايلات (302 على بورت البوابة)
+  # ولو مختلفة عن الإعدادات → قتل قسري (مرة كل 30 دقيقة كحد أقصى)
+  TSF=/tmp/wd_gwfix_ts
+  NOW=$(date +%s); TS=$(cat "$TSF" 2>/dev/null); case "$TS" in ''|*[!0-9]*) TS=0 ;; esac
+  if [ $((NOW - TS)) -ge 1800 ] && command -v nc >/dev/null 2>&1 && [ -n "$GW" ]; then
+    RUNGW=$(printf "GET /login/ HTTP/1.0\\r\\nHost: 127.0.0.1\\r\\n\\r\\n" | nc -w 5 127.0.0.1 2060 2>/dev/null | sed -n 's/.*[?&]gw_id=\\([^&]*\\).*/\\1/p' | head -n1 | tr -d '\\r')
+    if [ -n "$RUNGW" ] && [ "$RUNGW" != "$GW" ]; then
+      date +%s > "$TSF"
+      wdlog "wifidog ماسك هوية قديمة ($RUNGW والصح $GW) → قتل قسري وإعادة تشغيل"
+      wd_frs
+      pgrep wifidog >/dev/null 2>&1 || wdlog "⚠️ wifidog مرجعش بعد إصلاح الهوية — هيجرب تاني بعد 30 دقيقة"
+    fi
+  fi
 fi
 
 # ── فحص صحة باك-إند iptables (اختبار امتدادات حقيقي — مش مجرد وجود الأمر)
@@ -153,7 +181,7 @@ if command -v iptables >/dev/null 2>&1; then
     wd_backend_ok || wd_backend_repair
     /etc/init.d/firewall restart >/dev/null 2>&1
     sleep 3
-    /etc/init.d/wifidog restart >/dev/null 2>&1
+    wd_frs
     sleep 5
     if iptables -t nat -S 2>/dev/null | grep -q 2060; then
       wdlog "قاعدة الاعتراض اتصلحت ورجعت ✅"
@@ -164,7 +192,7 @@ if command -v iptables >/dev/null 2>&1; then
 else
   wd_install_iptables
   if command -v iptables >/dev/null 2>&1; then
-    /etc/init.d/wifidog restart >/dev/null 2>&1
+    wd_frs
   fi
 fi
 

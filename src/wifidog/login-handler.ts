@@ -18,6 +18,15 @@ export async function handlePortalLogin(body: {
   let device
   if (gatewayId) {
     device = await prisma.device.findUnique({ where: { gatewayId } })
+    if (!device) {
+      // ── إصلاح ذاتي ──
+      // راوتر محوّل من كافيه لتاني ممكن يفضل شوية شغال ماسك GatewayID قديم
+      // في الذاكرة — فبيبعت هوية مش موجودة عندنا. لو فيه جهاز واحد شغال
+      // بس على السيرفر، فمفيش غموض: نعتبره هو الجهاز المقصود (بدل ما
+      // العميل يشوف "الجهاز غير موجود أو غير نشط" والجهاز سليم)
+      const actives = await prisma.device.findMany({ where: { isActive: true }, take: 2 })
+      if (actives.length === 1) device = actives[0]
+    }
   } else {
     device = await prisma.device.findFirst({ where: { isActive: true } })
   }

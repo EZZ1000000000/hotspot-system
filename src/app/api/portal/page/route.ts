@@ -103,7 +103,7 @@ function defaultTemplate(placeName: string, wifiName: string, logoEmoji: string)
 var params=(function(){var p=new URLSearchParams(location.search);return{gw_address:p.get('gw_address')||'',gw_port:p.get('gw_port')||'2060',mac:p.get('mac')||'',ip:p.get('ip')||'',gw_id:p.get('gw_id')||'',url:p.get('url')||''};})();
 function formatCode(v){var c=v.toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,20);return c.match(/.{1,4}/g)?.join('-')||c;}
 function onInput(el){var f=formatCode(el.value);el.value=f;var r=f.replace(/-/g,'');var pct=Math.min(100,(r.length/20)*100);var bar=document.getElementById('bar');bar.style.width=pct+'%';bar.style.background=r.length>=6?'#00D4FF':'#FF9800';document.getElementById('btn').disabled=r.length<6;document.getElementById('err').style.display='none';}
-function showError(msg){var el=document.getElementById('err');el.textContent='&#9888; '+msg;el.style.display='block';}
+function showError(msg){var el=document.getElementById('err');el.textContent='\u26A0\uFE0F '+msg;el.style.display='block';}
 // ── بطاقة الجلسة الحية: وقت متبقي + داتا مستهلكة ──
 var st={pkg:'BOTH',remainSec:null,totalSec:null,dataUsed:0,dataLimit:null};
 function fmtHMS(s){s=Math.max(0,Math.floor(s));var h=Math.floor(s/3600),m=Math.floor((s%3600)/60),x=s%60;return (h>0?h+':':'')+String(m).padStart(2,'0')+':'+String(x).padStart(2,'0');}
