@@ -907,6 +907,12 @@ export default function DashboardPage() {
 
           {tab==='vouchers'&&(
             <div style={S.card}>
+              {devices.some(d=>!d.isActive)&&(
+                <div style={{marginBottom:14,padding:'10px 14px',background:'rgba(255,68,68,0.07)',border:'1px solid rgba(255,68,68,0.35)',borderRadius:10}}>
+                  <div style={{fontSize:12,color:'#FF6B6B',fontWeight:700,marginBottom:3}}>⚠️ في جهاز موقوف عندك: {devices.filter(d=>!d.isActive).map(d=>d.name).join('، ')}</div>
+                  <div style={{fontSize:11,color:'#6B8CAE',lineHeight:1.9}}>الجهاز الموقوف ده هو اللي بيخلي صفحة تسجيل الدخول تظهر «الخدمة موقوفة مؤقتاً» لكل العملاء — إيقاف الكروت مالوش علاقة بالصفحة دي خالص. كلمنا نرجّعه أو من إدارة النظام.</div>
+                </div>
+              )}
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14,gap:10,flexWrap:'wrap'}}>
                 <h3 style={{fontSize:15,fontWeight:700,color:'#E2F0FB',margin:0}}>📋 الكروت ({vouchers.length})</h3>
                 <div style={{display:'flex',gap:7,flexWrap:'wrap'}}>

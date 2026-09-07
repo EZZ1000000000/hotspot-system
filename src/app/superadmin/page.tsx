@@ -572,8 +572,10 @@ function MonitorTab() {
     return ()=>clearInterval(t)
   },[load,checkAllDevices])
 
-  // توقيف/تشغيل جهاز من التاب مباشرة — مع رسالة واضحة (القطع الفعلي للمتصلين بياخد لحد 5 دقايق)
+  // توقيف/تشغيل جهاز من التاب مباشرة — مع تأكيد (الإيقاف إجراء شديد التأثير)
   const toggleDev=async(d:any)=>{
+    // تأكيد قبل الإيقاف — إيقاف الجهاز بيظهر صفحة «الخدمة موقوفة» لكل العملاء
+    if(d.isActive && !window.confirm(`هل أنت متأكد من إيقاف الجهاز «${d.name}»؟\n\n• صفحة تسجيل الدخول هتبقى «الخدمة موقوفة مؤقتاً» لكل العملاء\n• المتصلين هيتقفلوا خلال 5 دقايق\n\nلو قصدك تمنع كرت معين بس — استخدم تاب الكروت → زر إيقاف جنب الكرت`)) return
     setToggling(d.id); setToggleMsg(null)
     try{
       const r=await rpc((d as any).__srv||'gamma','/api/superadmin/device-toggle',{method:'POST',body:{deviceId:d.id,isActive:!d.isActive}})
@@ -736,8 +738,20 @@ function VouchersTab() {
   const [admins,setAdmins]=useState<Admin[]>([]); const [selAdmin,setSelAdmin]=useState(''); const [status,setStatus]=useState('USED')
   const [vouchers,setVouchers]=useState<VoucherItem[]>([]); const [total,setTotal]=useState(0); const [loading,setLoading]=useState(false)
   const [msg,setMsg]=useState(''); const [selected,setSelected]=useState<Set<string>>(new Set()); const [confirm,setConfirm]=useState<null|{action:string;label:string}>(null)
+  const [stoppedDevices,setStoppedDevices]=useState<string[]>([])
 
   useEffect(()=>{loadAllAdmins().then(d=>setAdmins(d))},[])
+  // جيب أجهزة الأدمن المختار — لو فيه جهاز موقوف نبّه فوراً
+  // (الجهاز الموقوف هو اللي بيخلي صفحة تسجيل الدخول «الخدمة موقوفة» — مش إيقاف الكروت)
+  useEffect(()=>{
+    setStoppedDevices([])
+    if(!selAdmin) return
+    const srv=admins.find(a=>a.id===selAdmin)?.__srv
+    rpc(srv,`/api/superadmin/admin-devices?adminId=${selAdmin}`).then(d=>{
+      const devs=d?.devices||[]
+      setStoppedDevices(devs.filter((x:any)=>!x.isActive).map((x:any)=>x.name))
+    }).catch(()=>{})
+  },[selAdmin,admins])
   const loadVouchers=useCallback(async()=>{
     setLoading(true)
     const params=new URLSearchParams({limit:'300'})
@@ -809,6 +823,12 @@ function VouchersTab() {
           <button onClick={loadVouchers} style={{...S.btn('#111B2D','#6B8CAE'),border:'1px solid #1C2A40',padding:'8px 14px',fontSize:12}}>🔍 بحث</button>
         </div>
       </div>
+      {stoppedDevices.length>0&&(
+        <div style={{...S.card,marginBottom:12,padding:12,background:'rgba(255,68,68,0.07)',border:'1px solid rgba(255,68,68,0.35)'}}>
+          <div style={{fontSize:12,color:'#FF6B6B',fontWeight:700,marginBottom:4}}>⚠️ في جهاز موقوف: {stoppedDevices.join('، ')}</div>
+          <div style={{fontSize:11,color:'#6B8CAE',lineHeight:1.9}}>الجهاز الموقوف ده هو اللي بيخلي صفحة تسجيل الدخول تظهر «الخدمة موقوفة مؤقتاً» لكل العملاء — إيقاف الكروت مالوش علاقة بالصفحة دي خالص. لتشغيل الجهاز: افتح تاب «الأجهزة» (أو «إدارة الأجهزة») واضغط ▶️ تشغيل جنب الجهاز.</div>
+        </div>
+      )}
       {msg&&<div style={S.msg(msg.startsWith('✅'))}>{msg}<span onClick={()=>setMsg('')} style={{cursor:'pointer'}}>✕</span></div>}
       {vouchers.length>0&&(
         <div style={{...S.card,marginBottom:12,padding:10,display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
@@ -2436,6 +2456,9 @@ function DevicesControlTab({ sa }: { sa: SA }) {
   }
 
   const toggleDevice = async (adminId: string, deviceId: string, currentActive: boolean) => {
+    const devName = (devices[adminId]||[]).find(d=>d.id===deviceId)?.name || 'الجهاز'
+    // تأكيد قبل الإيقاف — إيقاف الجهاز بيظهر صفحة «الخدمة موقوفة» لكل العملاء
+    if(currentActive && !window.confirm(`هل أنت متأكد من إيقاف «${devName}»؟\n\n• صفحة تسجيل الدخول هتبقى «الخدمة موقوفة مؤقتاً» لكل العملاء\n• المتصلين هيتقفلوا خلال 5 دقايق\n\nلو قصدك تمنع كرت معين بس — استخدم تاب الكروت`)) return
     setToggling(deviceId)
     const d = await rpc(admins.find(a=>a.id===adminId)?.__srv, '/api/superadmin/admin-devices', {
       method: 'POST',
