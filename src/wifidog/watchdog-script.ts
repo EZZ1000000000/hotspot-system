@@ -24,17 +24,20 @@
 // (rate-limited كل 30 دقيقة) عشان ميضغطش الراوتر أو الفيد.
 // ═══════════════════════════════════════════════════════════
 
-export const WATCHDOG_VERSION = '4'
+export const WATCHDOG_VERSION = '5'
 
 export function buildWatchdogScript(): string {
   return `#!/bin/sh
-# 🛡️ الحارس الذاتي v4 (WFD_WD_VERSION=4) — شغال كل 5 دقايق من الكرون
+# 🛡️ الحارس الذاتي v5 (WFD_WD_VERSION=5) — شغال كل 5 دقايق من الكرون
 # يصلح لوحده: uhttpd / wifidog / قاعدة الاعتراض / باك-إند iptables المعطوب
 # + كشف العملية العنيدة: wifidog ماسك GatewayID قديم بعد تحويل الجهاز
 #   بين الكافيهات → قتل قسري وإعادة تشغيل (سبب "الجهاز غير موجود أو غير نشط")
+# + كشف بقايا الكافيه القديم: سكربتات متوجهة لسيرفر تاني (سبب "الاسم بيرجع
+#   للكافيه القديم" بعد التحويل) → مسح شامل وتسطيب نظيف من سيرفرنا لوحده
+# + فرض اسم الشبكة من السيرفر كل 5 دقايق — شبكة أمان لو المزامنة وقعت
 # وبيحدّث نفسه من السيرفر كل ساعة — أي إصلاح جديد بيوصل لكل الراوترات لوحده
 # وبيبلّغ عن نسخة السكربت المركّبة كل ساعة — عشان اللوحة تعرف مين محدّث ومين لأ
-WFD_WD_VERSION="4"
+WFD_WD_VERSION="5"
 LOG=/tmp/hotspot_watchdog.log
 CONF=/etc/wifidog.conf
 
@@ -54,6 +57,16 @@ SRV=$(sed -n 's/.*FirewallRule allow to //p' "$CONF" 2>/dev/null | head -n1 | tr
 crontab -l 2>/dev/null | grep -q hotspot-watchdog || {
   (crontab -l 2>/dev/null | grep -v hotspot-watchdog; echo "*/5 * * * * /usr/bin/hotspot-watchdog >/dev/null 2>&1") | crontab - >/dev/null 2>&1
 }
+
+# ── [0b] صحة الكرون: أي سطر كرون بيكم سيرفر تاني مباشرة (بقايا كافيه قديم) بينتمس
+#  وسطورنا بترجع لوحدها — ده اللي يمنع أي حاجة قديمة تشتغل ورا ضهرنا
+if crontab -l 2>/dev/null | grep -Eq 'vercel\\.app'; then
+  (crontab -l 2>/dev/null | grep -vE 'hotspot-|vercel\\.app'; \\
+   echo "*/5 * * * * /usr/bin/hotspot-watchdog >/dev/null 2>&1"; \\
+   [ -f /usr/bin/hotspot-ssid-sync ] && echo "*/5 * * * * /usr/bin/hotspot-ssid-sync >/dev/null 2>&1"; true
+  ) | crontab - >/dev/null 2>&1 \\
+  && wdlog "الكرون كان فيه سطور لسيرفرات تانية (بقايا كافيه قديم) → اتنضفت ورجّعنا سطورنا"
+fi
 
 # ── [1] الجسر المحلي (uhttpd)
 if ! pgrep uhttpd >/dev/null 2>&1; then
@@ -90,6 +103,34 @@ else
       wd_frs
       pgrep wifidog >/dev/null 2>&1 || wdlog "⚠️ wifidog مرجعش بعد إصلاح الهوية — هيجرب تاني بعد 30 دقيقة"
     fi
+  fi
+fi
+
+# ── [2c] كشف بقايا كافيه قديم: سكربتات بتكلم سيرفر غير سيرفرنا
+#  ده سبب "الاسم بيرجع للكافيه القديم" بعد تحويل الجهاز: لو sync أو الجسر
+#  مكتوبين لدومين كافيه تاني (تسطيب قديم فضل عايش) → بنمسح كل حاجة قديمة
+#  ونعمل تسطيب نظيف من سيرفرنا (مرة كل ساعتين كحد أقصى عشان مينضغطش الراوتر)
+NOW=$(date +%s); TS=$(cat /tmp/wd_foreign_ts 2>/dev/null); case "$TS" in ''|*[!0-9]*) TS=0 ;; esac
+if [ -n "$SRV" ] && [ -n "$GW" ] && [ -f /usr/bin/hotspot-ssid-sync ] && [ $((NOW - TS)) -ge 7200 ]; then
+  FRN=0
+  grep -qF "$SRV" /usr/bin/hotspot-ssid-sync 2>/dev/null || FRN=1
+  if [ -f /www/cgi-bin/go ] && ! grep -qF "$SRV" /www/cgi-bin/go 2>/dev/null; then
+    FRN=1
+  fi
+  if [ "$FRN" = "1" ]; then
+    date +%s > /tmp/wd_foreign_ts
+    wdlog "⚠️ فيه سكربتات متوجهة لسيرفر تاني (بقايا كافيه قديم) → مسح شامل + تسطيب نظيف من سيرفرنا"
+    wget -q -T 30 -O /tmp/wd_fix_install.sh --no-check-certificate "https://\${SRV}/api/router/fix?gw_id=\${GW}" 2>/dev/null \\
+      || uclient-fetch -q -T 30 -O /tmp/wd_fix_install.sh --no-check-certificate "https://\${SRV}/api/router/fix?gw_id=\${GW}" 2>/dev/null
+    if [ -s /tmp/wd_fix_install.sh ] && head -n1 /tmp/wd_fix_install.sh 2>/dev/null | grep -q '#!/bin/sh' && sh -n /tmp/wd_fix_install.sh >/dev/null 2>&1; then
+      sh /tmp/wd_fix_install.sh >> "$LOG" 2>&1
+      wdlog "التسطيب النظيف خلص — بقايا الكافيه القديم اتمسحت ✅"
+    else
+      wdlog "⚠️ تنزيل سكربت التسطيب فشل — هنعيد المحاولة بعد ساعتين"
+      rm -f /tmp/wd_foreign_ts
+    fi
+    rm -f /tmp/wd_fix_install.sh
+    exit 0
   fi
 fi
 
@@ -193,6 +234,36 @@ else
   wd_install_iptables
   if command -v iptables >/dev/null 2>&1; then
     wd_frs
+  fi
+fi
+
+# ── [3b] فرض اسم الشبكة من السيرفر — شبكة أمان لو المزامنة وقعت أو اتشالت
+#  بنجيب الاسم الرسمي (wifiSSID) من سيرفرنا ونطبقه لو مختلف — نفس منطق المزامنة
+if [ -n "$SRV" ] && [ -n "$GW" ]; then
+  WANT=$(uclient-fetch -q -T 15 -O - --no-check-certificate "https://\${SRV}/api/router/identity?gw_id=\${GW}" 2>/dev/null | head -n1)
+  [ -z "$WANT" ] && WANT=$(wget -q -T 15 -O - --no-check-certificate "https://\${SRV}/api/router/identity?gw_id=\${GW}" 2>/dev/null | head -n1)
+  WANT=$(printf '%s' "$WANT" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+  case "$WANT" in
+    *"<"*|*"{"*|*'"'*|*"%"*|*"="*|*"&"*|*";"*|""|"unknown") WANT="" ;;
+  esac
+  if [ -n "$WANT" ] && [ "\${#WANT}" -le 64 ]; then
+    CHG=0; i=0
+    while uci -q show wireless.@wifi-iface[$i] >/dev/null 2>&1; do
+      WMODE=$(uci -q get wireless.@wifi-iface[$i].mode 2>/dev/null)
+      if [ "$WMODE" = "ap" ] || [ -z "$WMODE" ]; then
+        CUR=$(uci -q get wireless.@wifi-iface[$i].ssid 2>/dev/null)
+        if [ "$CUR" != "$WANT" ]; then
+          uci set wireless.@wifi-iface[$i].ssid="$WANT"
+          CHG=1
+        fi
+      fi
+      i=$((i+1))
+    done
+    if [ "$CHG" = "1" ]; then
+      uci commit wireless
+      wifi reload >/dev/null 2>&1
+      wdlog "اسم الشبكة اتظبط من السيرفر: $WANT"
+    fi
   fi
 fi
 

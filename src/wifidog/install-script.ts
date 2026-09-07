@@ -110,6 +110,22 @@ say(){ echo ""; echo "==> $*"; }
 say "[1/9] تنضيف أي إصلاحات قديمة..."
 [ "$(id -u)" = "0" ] || { echo "❌ لازم تشغّل السكريبت بحساب root"; exit 1; }
 
+# ── تنظيف شامل لبقايا أي كافيه قديم ──
+#  أي سطر كرون أو سكربت من تسطيب سابق (لكافيه تاني) ممكن يفضل شغال في الخلفية
+#  ويرجّع اسم/إعدادات الكافيه القديم كل شوية بعد تحويل الجهاز — بنمسحهم كلهم هنا،
+#  والخطوات الجاية بتعيد كتابة كل حاجة صح من السيرفر الحالي
+OLDC=$(crontab -l 2>/dev/null | grep -cE 'hotspot-|vercel\\.app')
+case "$OLDC" in ''|*[!0-9]*) OLDC=0 ;; esac
+if [ "$OLDC" -gt 0 ]; then
+  (crontab -l 2>/dev/null | grep -vE 'hotspot-|vercel\\.app') | crontab - >/dev/null 2>&1
+  /etc/init.d/cron restart >/dev/null 2>&1
+  echo "🧹 مسحنا $OLDC سطر كرون قديم من كافيهات كانت متسطبة قبل كده"
+fi
+rm -f /usr/bin/hotspot-ssid-sync /usr/bin/hotspot-watchdog /usr/bin/hotspot-tunnel \\
+      /usr/bin/hotspot-ssid /usr/bin/hotspot-status /usr/bin/hotspot-restart \\
+      /usr/bin/hotspot-test /usr/bin/hotspot-doctor /usr/bin/hotspot-relay.sh \\
+      /etc/init.d/hotspot-relay /tmp/hotspot_portal.html /tmp/hotspot_portal.ts 2>/dev/null
+
 # ────────────────────────────────────────────────
 # [0/9] كشف مكان كابل الإنترنت وإصلاحه تلقائياً
 #  لو الكابل متركب في منفذ LAN (زي LAN1) الراوتر مش بيعمل NAT:
