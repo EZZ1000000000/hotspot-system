@@ -157,6 +157,30 @@ const TABS = [
   { key:'logs',        icon:'📋', label:'السجلات' },
 ]
 
+// ─── مودال تأكيد موحّد — بديل window.confirm ────────────────────────────────
+// السبب: المتصفحات (خصوصاً كروم على الموبايل) بتحجب window.confirm بعد ما
+// المستخدم يدوس «منع مربعات حوار إضافية» مرة واحدة — وساعتها confirm بيرجع
+// false بصمت والأزرار تبقى ميتة من غير أي رسالة. المودال ده داخلي ومضمون 100%.
+function ConfirmModal({ icon='⚠️', title, lines, confirmLabel='تأكيد', confirmColor='#FF4444', busy=false, onConfirm, onCancel }:{
+  icon?:string; title:string; lines:string[]; confirmLabel?:string; confirmColor?:string; busy?:boolean; onConfirm:()=>void; onCancel:()=>void
+}) {
+  return (
+    <div style={{position:'fixed',inset:0,zIndex:400,background:'rgba(0,0,0,0.75)',display:'flex',alignItems:'center',justifyContent:'center',padding:16}} onClick={busy?undefined:onCancel}>
+      <div style={{background:'#0C1420',border:'1px solid #1C2A40',borderRadius:16,padding:22,width:'100%',maxWidth:370,boxShadow:'0 20px 60px rgba(0,0,0,0.6)',fontFamily:'Cairo,sans-serif'}} onClick={e=>e.stopPropagation()}>
+        <div style={{fontSize:36,textAlign:'center',marginBottom:10}}>{icon}</div>
+        <div style={{fontSize:14,fontWeight:800,color:'#E2F0FB',textAlign:'center',marginBottom:12}}>{title}</div>
+        <div style={{fontSize:12,color:'#6B8CAE',textAlign:'center',lineHeight:1.9,marginBottom:18,background:'#070B12',borderRadius:10,padding:'10px 12px'}}>
+          {lines.map((l,i)=><div key={i}>{l}</div>)}
+        </div>
+        <div style={{display:'flex',gap:10}}>
+          <button onClick={onConfirm} disabled={busy} style={{flex:1,padding:'11px',borderRadius:10,border:'none',background:confirmColor,color:confirmColor==='#00E676'||confirmColor==='#fb923c'?'#000':'#fff',fontFamily:'Cairo,sans-serif',fontSize:13,fontWeight:800,cursor:'pointer',opacity:busy?0.6:1}}>{busy?'⏳ جاري التنفيذ...':confirmLabel}</button>
+          <button onClick={onCancel} disabled={busy} style={{flex:1,padding:'11px',borderRadius:10,border:'1px solid #1C2A40',background:'#111B2D',color:'#6B8CAE',fontFamily:'Cairo,sans-serif',fontSize:13,fontWeight:700,cursor:'pointer',opacity:busy?0.6:1}}>إلغاء</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function LoginScreen({ onLogin }:{ onLogin:(sa:SA)=>void }) {
   const [user,setUser]=useState(''); const [pass,setPass]=useState(''); const [err,setErr]=useState(''); const [loading,setLoading]=useState(false)
   const login = async () => {
@@ -531,6 +555,8 @@ function MonitorTab() {
   const [toggling,setToggling]=useState<string|null>(null)
   const [lastCheck,setLastCheck]=useState<Date|null>(null)
   const [toggleMsg,setToggleMsg]=useState<string|null>(null)
+  // تأكيد إيقاف الجهاز — مودال داخلي (window.confirm بيتحجب من المتصفح ويزر يبقى ميت)
+  const [devConfirm,setDevConfirm]=useState<any|null>(null)
   const load=useCallback(async()=>{
     setLoading(true)
     const q=selAdmin?`?adminId=${selAdmin}`:''
@@ -572,10 +598,8 @@ function MonitorTab() {
     return ()=>clearInterval(t)
   },[load,checkAllDevices])
 
-  // توقيف/تشغيل جهاز من التاب مباشرة — مع تأكيد (الإيقاف إجراء شديد التأثير)
-  const toggleDev=async(d:any)=>{
-    // تأكيد قبل الإيقاف — إيقاف الجهاز بيظهر صفحة «الخدمة موقوفة» لكل العملاء
-    if(d.isActive && !window.confirm(`هل أنت متأكد من إيقاف الجهاز «${d.name}»؟\n\n• صفحة تسجيل الدخول هتبقى «الخدمة موقوفة مؤقتاً» لكل العملاء\n• المتصلين هيتقفلوا خلال 5 دقايق\n\nلو قصدك تمنع كرت معين بس — استخدم تاب الكروت → زر إيقاف جنب الكرت`)) return
+  // توقيف/تشغيل جهاز من التاب مباشرة — التأكيد بمودال داخلي مش window.confirm
+  const doToggleDev=async(d:any)=>{
     setToggling(d.id); setToggleMsg(null)
     try{
       const r=await rpc((d as any).__srv||'gamma','/api/superadmin/device-toggle',{method:'POST',body:{deviceId:d.id,isActive:!d.isActive}})
@@ -589,8 +613,13 @@ function MonitorTab() {
     }catch{
       setToggleMsg('❌ فشل الاتصال بالسيرفر — جرّب تاني')
     }
-    setToggling(null)
+    setToggling(null);setDevConfirm(null)
     load();checkAllDevices()
+  }
+  const toggleDev=(d:any)=>{
+    // الإيقاف إجراء شديد التأثير → مودال تأكيد داخلي مضمون
+    if(d.isActive) setDevConfirm(d)
+    else doToggleDev(d)
   }
 
   const statuses=Object.values(devStatus)
@@ -730,6 +759,24 @@ function MonitorTab() {
           </div>
         )}
       </div>
+
+      {/* مودال تأكيد إيقاف الجهاز — داخلي ومضمون بدل window.confirm اللي بيتحجب من المتصفح */}
+      {devConfirm&&(
+        <ConfirmModal
+          icon="⛔"
+          title={`تأكيد إيقاف الجهاز «${devConfirm.name}»`}
+          lines={[
+            '• صفحة تسجيل الدخول هتبقى «الخدمة موقوفة مؤقتاً» لكل العملاء',
+            '• المتصلين هيتقفلوا خلال 5 دقايق كحد أقصى',
+            '• أول ما تضغط ▶️ تشغيل الصفحة بترجع طبيعية على طول',
+            'لو قصدك تمنع كرت معين بس — استخدم تاب الكروت → زر إيقاف جنب الكرت',
+          ]}
+          confirmLabel="نعم، إيقاف الجهاز"
+          busy={toggling===devConfirm.id}
+          onConfirm={()=>doToggleDev(devConfirm)}
+          onCancel={()=>setDevConfirm(null)}
+        />
+      )}
     </div>
   )
 }
@@ -776,6 +823,23 @@ function VouchersTab() {
   const selAll=selected.size===vouchers.length&&vouchers.length>0
   const toggleAll=()=>selAll?setSelected(new Set()):setSelected(new Set(vouchers.map(v=>v.id)))
 
+  // ⛔ إيقاف / ▶️ تشغيل كرت واحد من الجدول مباشرة — بدون اعتماد على الفلتر
+  // (بيبعت ids بس من غير fromStatus — فبيشتغل مهما كان الفلتر المختار)
+  const [rowBusy,setRowBusy]=useState<string|null>(null)
+  const rowToggle=async(v:any,action:'disable'|'enable')=>{
+    setRowBusy(v.id);setMsg('')
+    try{
+      const d=await rpc((v as any).__srv,'/api/superadmin/vouchers',{method:'PATCH',body:{ids:[v.id],toStatus:action==='disable'?'DISABLED':'UNUSED'}})
+      if(d&&d.success)
+        setMsg(action==='disable'
+          ?`⛔ تم إيقاف الكرت ${v.code} — هتلاقيه في فلتر «موقوفة» لو بحثت عنه`
+          :`▶️ تم تشغيل الكرت ${v.code} — رجع يشتغل عادي`)
+      else setMsg('❌ '+((d&&d.error)||'خطأ'))
+      loadVouchers()
+    }catch{setMsg('❌ فشل الاتصال بالسيرفر — جرّب تاني')}
+    setRowBusy(null)
+  }
+
   const doAction=async()=>{
     if(!confirm) return; setLoading(true); setMsg('')
     try{
@@ -793,7 +857,7 @@ function VouchersTab() {
         const bySrv=await rpcAll('/api/superadmin/vouchers',{method:confirm.action==='delete'?'DELETE':'PATCH',body})
         okCount=SERVER_KEYS.reduce((s,k)=>s+((bySrv[k]&&(bySrv[k].deleted||bySrv[k].updated))||0),0)
       }
-      setMsg(`✅ تم — ${okCount} كارت`);loadVouchers()
+      setMsg(confirm.action==='delete'?`🗑️ تم حذف ${okCount} كارت`:confirm.action==='disable'?`⛔ تم إيقاف ${okCount} كارت — هتلاقيهم في فلتر «موقوفة»`:`▶️ تم تشغيل ${okCount} كارت — رجعت تانية`);loadVouchers()
     }catch(e:any){setMsg('❌ '+e.message)}
     setConfirm(null);setLoading(false)
   }
@@ -853,7 +917,7 @@ function VouchersTab() {
           <div style={{overflowX:'auto'}}>
             <div style={{fontSize:11,color:'#6B8CAE',marginBottom:8}}>إجمالي: {total} (يعرض {vouchers.length})</div>
             <table style={{width:'100%',borderCollapse:'collapse',fontSize:11,minWidth:460}}>
-              <thead><tr style={{borderBottom:'1px solid #1C2A40'}}><th style={{padding:'7px 8px',width:28}}></th>{['الكود','الحالة','الباقة','الأدمن','الجهاز'].map(h=><th key={h} style={{padding:'7px 8px',color:'#6B8CAE',fontWeight:600,textAlign:'right',whiteSpace:'nowrap'}}>{h}</th>)}</tr></thead>
+              <thead><tr style={{borderBottom:'1px solid #1C2A40'}}><th style={{padding:'7px 8px',width:28}}></th>{['الكود','الحالة','الباقة','الأدمن','الجهاز','إجراءات'].map(h=><th key={h} style={{padding:'7px 8px',color:'#6B8CAE',fontWeight:600,textAlign:'right',whiteSpace:'nowrap'}}>{h}</th>)}</tr></thead>
               <tbody>
                 {vouchers.map(v=>(
                   <tr key={v.id} style={{borderBottom:'1px solid #0C1420',background:selected.has(v.id)?'rgba(0,136,204,0.05)':'transparent'}}>
@@ -863,6 +927,17 @@ function VouchersTab() {
                     <td style={{padding:'6px 8px',color:'#6B8CAE'}}>{v.packageType==='BOTH'?'داتا+وقت':v.packageType==='DATA_ONLY'?'داتا':'وقت'}</td>
                     <td style={{padding:'6px 8px',color:'#6B8CAE'}}>{v.hotspotAdmin?.name||'—'} <SrvBadge srv={v.__srv}/></td>
                     <td style={{padding:'6px 8px',color:'#6B8CAE'}}>{v.device?.name||'—'}</td>
+                    <td style={{padding:'6px 8px',whiteSpace:'nowrap'}} onClick={e=>e.stopPropagation()}>
+                      {(v.status==='UNUSED'||v.status==='ACTIVE')&&(
+                        <button onClick={()=>rowToggle(v,'disable')} disabled={rowBusy===v.id} title="إيقاف الكرت بيمنعه هو بس — الشبكة وصفحة الدخول مش هيتأثروا"
+                          style={{padding:'3px 9px',borderRadius:6,border:'1px solid rgba(255,68,68,0.35)',background:'rgba(255,68,68,0.1)',color:'#FF4444',fontFamily:'Cairo,sans-serif',fontSize:10,fontWeight:700,cursor:'pointer',opacity:rowBusy===v.id?0.6:1}}>{rowBusy===v.id?'⏳':'⛔ إيقاف'}</button>
+                      )}
+                      {v.status==='DISABLED'&&(
+                        <button onClick={()=>rowToggle(v,'enable')} disabled={rowBusy===v.id} title="تشغيل الكرت — يرجع يشتغل عادي"
+                          style={{padding:'3px 9px',borderRadius:6,border:'1px solid rgba(0,230,118,0.35)',background:'rgba(0,230,118,0.1)',color:'#00E676',fontFamily:'Cairo,sans-serif',fontSize:10,fontWeight:700,cursor:'pointer',opacity:rowBusy===v.id?0.6:1}}>{rowBusy===v.id?'⏳':'▶️ تشغيل'}</button>
+                      )}
+                      {(v.status==='DEPLETED'||v.status==='EXPIRED')&&<span style={{fontSize:10,color:'#354E6A'}}>—</span>}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -956,7 +1031,13 @@ function RewardsTab({ sa }:{ sa:SA }) {
     if(d.success){setMsg(`✅ تم على ${SERVERS[srv]?.label}`);load();setShowNew(false)} else setMsg('❌ '+d.error)
   }
   const toggle=async(t:any)=>{await rpc(t.__srv,'/api/rewards/tasks',{method:'PUT',body:{id:t.id,isActive:!t.isActive}});load()}
-  const del=async(t:any)=>{if(!confirm('حذف؟')) return;await rpc(t.__srv,'/api/rewards/tasks',{method:'DELETE',body:{id:t.id}});load()}
+  // حذف بتأكيد داخلي (ضغطة تانية خلال 4 ثواني) — window.confirm بيتحجب من المتصفح ويزر يبقى ميت
+  const [pendingDel,setPendingDel]=useState<string|null>(null)
+  const del=async(t:any)=>{
+    if(pendingDel!==t.id){setPendingDel(t.id);setTimeout(()=>setPendingDel(p=>p===t.id?null:p),4000);return}
+    setPendingDel(null)
+    await rpc(t.__srv,'/api/rewards/tasks',{method:'DELETE',body:{id:t.id}});setMsg('🗑️ تم حذف المهمة');load()
+  }
   return (
     <div>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
@@ -993,7 +1074,7 @@ function RewardsTab({ sa }:{ sa:SA }) {
             </div>
             <div style={{display:'flex',gap:6,flexShrink:0}}>
               <button onClick={()=>toggle(t)} style={{...S.btn(t.isActive?'rgba(255,68,68,0.1)':'rgba(0,230,118,0.1)',t.isActive?'#FF4444':'#00E676'),border:`1px solid ${t.isActive?'rgba(255,68,68,0.3)':'rgba(0,230,118,0.3)'}`,fontSize:11,padding:'6px 10px'}}>{t.isActive?'⏸':'▶️'}</button>
-              <button onClick={()=>del(t)} style={{...S.btn('rgba(255,68,68,0.08)','#FF4444'),border:'1px solid rgba(255,68,68,0.25)',fontSize:11,padding:'6px 10px'}}>🗑️</button>
+              <button onClick={()=>del(t)} title="اضغط مرتين للحذف" style={{...S.btn('rgba(255,68,68,0.08)','#FF4444'),border:'1px solid rgba(255,68,68,0.25)',fontSize:11,padding:'6px 10px'}}>{pendingDel===t.id?'متأكد؟':'🗑️'}</button>
             </div>
           </div>
         </div>
@@ -2438,6 +2519,9 @@ function DevicesControlTab({ sa }: { sa: SA }) {
   const [loading, setLoading] = useState(true)
   const [toggling,setToggling]= useState<string|null>(null)
   const [msg,     setMsg]     = useState('')
+  // تأكيد الإيقاف — مودال داخلي مضمون (window.confirm بيتحجب من المتصفح ويزر يبقى ميت)
+  const [devConfirm,setDevConfirm]=useState<null|{adminId:string;deviceId:string;name:string;bulk:boolean}>(null)
+  const [bulkRunning,setBulkRunning]=useState(false)
 
   const loadAdmins = useCallback(async () => {
     setLoading(true)
@@ -2455,35 +2539,67 @@ function DevicesControlTab({ sa }: { sa: SA }) {
     setDevices(prev => ({ ...prev, [adminId]: d.devices || [] }))
   }
 
-  const toggleDevice = async (adminId: string, deviceId: string, currentActive: boolean) => {
-    const devName = (devices[adminId]||[]).find(d=>d.id===deviceId)?.name || 'الجهاز'
-    // تأكيد قبل الإيقاف — إيقاف الجهاز بيظهر صفحة «الخدمة موقوفة» لكل العملاء
-    if(currentActive && !window.confirm(`هل أنت متأكد من إيقاف «${devName}»؟\n\n• صفحة تسجيل الدخول هتبقى «الخدمة موقوفة مؤقتاً» لكل العملاء\n• المتصلين هيتقفلوا خلال 5 دقايق\n\nلو قصدك تمنع كرت معين بس — استخدم تاب الكروت`)) return
+  const reloadDevices = async (adminId: string) => {
+    const d = await rpc(admins.find(a=>a.id===adminId)?.__srv, `/api/superadmin/admin-devices?adminId=${adminId}`)
+    setDevices(prev => ({ ...prev, [adminId]: d.devices || [] }))
+  }
+
+  // التنفيذ الفعلي — بدون تأكيد (التأكيد بيحصل قبلها بمودال داخلي)
+  const execToggleDevice = async (adminId: string, deviceId: string, activate: boolean) => {
     setToggling(deviceId)
-    const d = await rpc(admins.find(a=>a.id===adminId)?.__srv, '/api/superadmin/admin-devices', {
-      method: 'POST',
-      body: { deviceId, isActive: !currentActive, adminId: sa.id },
-    })
-    if (d.success) {
-      setDevices(prev => ({
-        ...prev,
-        [adminId]: (prev[adminId] || []).map(dev => dev.id === deviceId ? { ...dev, isActive: !currentActive } : dev)
-      }))
-      setMsg(`✅ الجهاز ${!currentActive ? 'تم تفعيله' : 'تم إيقافه'}`)
-    } else {
-      setMsg('❌ ' + d.error)
-    }
+    try{
+      const d = await rpc(admins.find(a=>a.id===adminId)?.__srv, '/api/superadmin/admin-devices', {
+        method: 'POST',
+        body: { deviceId, isActive: activate, adminId: sa.id },
+      })
+      if (d && d.success) {
+        setDevices(prev => ({
+          ...prev,
+          [adminId]: (prev[adminId] || []).map(dev => dev.id === deviceId ? { ...dev, isActive: activate } : dev)
+        }))
+        setMsg(activate
+          ? '✅ تم تشغيل الجهاز — صفحة تسجيل الدخول رجعت عادية فوراً'
+          : '⛔ تم إيقاف الجهاز — صفحة الدخول بقت «الخدمة موقوفة مؤقتاً» والمتصلين هيتقفلوا خلال 5 دقايق كحد أقصى. التشغيل بيرجّع كل حاجة فوراً')
+      } else {
+        setMsg('❌ ' + ((d && d.error) || 'فشل تغيير حالة الجهاز'))
+      }
+    }catch{ setMsg('❌ فشل الاتصال بالسيرفر — جرّب تاني') }
     setToggling(null)
   }
 
-  const toggleAllDevices = async (adminId: string, activate: boolean) => {
-    const devs = devices[adminId] || []
-    for (const dev of devs) {
-      if (dev.isActive !== activate) await toggleDevice(adminId, dev.id, !activate)
+  const toggleDevice = (adminId: string, deviceId: string, currentActive: boolean) => {
+    // الإيقاف إجراء شديد التأثير → مودال تأكيد داخلي مضمون — التشغيل مباشر
+    if (currentActive) {
+      const devName = (devices[adminId]||[]).find(d=>d.id===deviceId)?.name || 'الجهاز'
+      setDevConfirm({ adminId, deviceId, name: devName, bulk: false })
+    } else execToggleDevice(adminId, deviceId, true)
+  }
+
+  const toggleAllDevices = (adminId: string, activate: boolean) => {
+    const devs = (devices[adminId] || []).filter(dev=>dev.isActive!==activate)
+    if (devs.length===0) return
+    if (!activate) {
+      setDevConfirm({ adminId, deviceId: '', name: `${devs.length} جهاز`, bulk: true })
+    } else (async()=>{
+      setBulkRunning(true)
+      for (const dev of devs) await execToggleDevice(adminId, dev.id, true)
+      await reloadDevices(adminId)
+      setBulkRunning(false)
+    })()
+  }
+
+  const confirmDevAction = async () => {
+    if (!devConfirm) return
+    if (devConfirm.bulk) {
+      setBulkRunning(true)
+      const devs = (devices[devConfirm.adminId] || []).filter(d=>d.isActive)
+      for (const dev of devs) await execToggleDevice(devConfirm.adminId, dev.id, false)
+      await reloadDevices(devConfirm.adminId)
+      setBulkRunning(false)
+    } else {
+      await execToggleDevice(devConfirm.adminId, devConfirm.deviceId, false)
     }
-    // reload
-    const d = await rpc(admins.find(a=>a.id===adminId)?.__srv, `/api/superadmin/admin-devices?adminId=${adminId}`)
-    setDevices(prev => ({ ...prev, [adminId]: d.devices || [] }))
+    setDevConfirm(null)
   }
 
   return (
@@ -2567,6 +2683,29 @@ function DevicesControlTab({ sa }: { sa: SA }) {
           })}
         </div>
       )}
+
+      {/* مودال تأكيد الإيقاف (جهاز واحد أو الكل) — داخلي ومضمون بدل window.confirm */}
+      {devConfirm&&(
+        <ConfirmModal
+          icon="⛔"
+          title={devConfirm.bulk?`تأكيد إيقاف ${devConfirm.name}`:`تأكيد إيقاف «${devConfirm.name}»`}
+          lines={devConfirm.bulk?[
+            '• كل الجهازات دي هتتوقف في نفس الوقت',
+            '• صفحة تسجيل الدخول هتبقى «الخدمة موقوفة مؤقتاً» لكل العملاء',
+            '• المتصلين هيتقفلوا خلال 5 دقايق كحد أقصى',
+            'لو قصدك تمنع كرت معين بس — استخدم تاب الكروت',
+          ]:[
+            '• صفحة تسجيل الدخول هتبقى «الخدمة موقوفة مؤقتاً» لكل العملاء',
+            '• المتصلين هيتقفلوا خلال 5 دقايق كحد أقصى',
+            '• أول ما تضغط ▶️ تشغيل الصفحة بترجع طبيعية على طول',
+            'لو قصدك تمنع كرت معين بس — استخدم تاب الكروت',
+          ]}
+          confirmLabel={devConfirm.bulk?'نعم، إيقاف الكل':'نعم، إيقاف الجهاز'}
+          busy={bulkRunning||!!toggling}
+          onConfirm={confirmDevAction}
+          onCancel={()=>!bulkRunning&&setDevConfirm(null)}
+        />
+      )}
     </div>
   )
 }
@@ -2610,8 +2749,12 @@ function PortalPageTab() {
     setLoading(false)
   }
 
+  // إعادة الـ Default بتأكيد داخلي (ضغطة تانية خلال 4 ثواني) — بديل window.confirm المحجوب
+  const [pendingReset,setPendingReset]=useState(false)
   const reset = async () => {
-    if (!selDevice || !confirm('هتمسح HTML المخصص وترجع للـ Default؟')) return
+    if (!selDevice) return
+    if (!pendingReset) { setPendingReset(true); setTimeout(()=>setPendingReset(false),4000); return }
+    setPendingReset(false)
     setLoading(true)
     await rpc((selDev as any)?.__srv, '/api/portal/page', {
       method: 'POST', body: { deviceId: selDevice, html: null }
@@ -2643,7 +2786,7 @@ function PortalPageTab() {
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button style={S.btn()} onClick={save} disabled={!selDevice || loading}>{loading ? '⏳' : '💾'} حفظ</button>
-          <button style={S.btn('#1C3A50', '#6B8CAE')} onClick={reset} disabled={!selDevice || loading}>🔄 Default</button>
+          <button style={S.btn('#1C3A50', '#6B8CAE')} onClick={reset} disabled={!selDevice || loading}>{pendingReset?'متأكد؟ اضغط تاني':'🔄 Default'}</button>
           {selDev && <a href={`${SERVERS[(selDev as any)?.__srv||'gamma']?.url||''}/api/portal/page?gw_id=${selDev.gatewayId}`} target='_blank' style={{ ...S.btn('#00E676', '#000'), textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}>👁️ معاينة</a>}
         </div>
       </div>

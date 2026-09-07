@@ -641,6 +641,9 @@ export default function DashboardPage() {
   const [gen,setGen]=useState({count:10,packageType:'BOTH',dataLimitMB:1024,timeLimitMin:60,speedLimitMbps:'',deviceId:'',maxUsageCount:1,codeType:'mix',voucherType:'STANDARD',codeLength:16,isUnlimited:false})
   const [devForm,setDevForm]=useState({name:'',location:'',routerIp:'192.168.1.1',sshPassword:'',wifiSSID:''})
   const [showAddDev,setShowAddDev]=useState(false)
+  // إيقاف/تشغيل الجهاز — تأكيد بمودال داخلي (مش window.confirm لأن المتصفح ممكن يحجبه ويزر يبقى ميت)
+  const [devConfirm,setDevConfirm]=useState<null|{id:string;name:string;activate:boolean}>(null)
+  const [devToggling,setDevToggling]=useState<string|null>(null)
 
   const loadAll=useCallback(async(a:Admin)=>{
     const [devRes,sessRes]=await Promise.all([fetch(`/api/admin/devices?adminId=${a.id}`),fetch(`/api/admin/sessions?adminId=${a.id}`)])
@@ -654,10 +657,30 @@ export default function DashboardPage() {
   // الصفحة بتاعة تسجيل الدخول والشبكة كله زي ما هي (مش زي إيقاف الجهاز)
   const toggleVouchers=async(action:'disable'|'enable',ids:string[])=>{
     if(!admin||ids.length===0) return
-    const res=await fetch('/api/admin/vouchers',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({adminId:admin.id,ids,action})})
-    const d=await res.json()
-    if(d.success){setMsg(action==='disable'?`⛔ تم إيقاف ${d.updated} كارت — الشبكة وصفحة الدخول زي ما هي`:`▶️ تم تشغيل ${d.updated} كارت`);loadVouchers(admin.id);setSelectedVouchers(new Set())}
-    else setMsg('❌ '+(d.error||'خطأ'))
+    try{
+      const res=await fetch('/api/admin/vouchers',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({adminId:admin.id,ids,action})})
+      const d=await res.json()
+      if(d.success){setMsg(action==='disable'?`⛔ تم إيقاف ${d.updated} كارت — الشبكة وصفحة الدخول زي ما هي`:`▶️ تم تشغيل ${d.updated} كارت`);loadVouchers(admin.id);setSelectedVouchers(new Set())}
+      else setMsg('❌ '+(d.error||'خطأ'))
+    }catch{setMsg('❌ فشل الاتصال بالسيرفر — جرّب تاني')}
+  }
+  // ⛔ إيقاف / ▶️ تشغيل الجهاز من لوحة الكافيه — بنفس قوة زر السوبر أدمن
+  // الإيقاف بيقفل صفحة الدخول بـ«الخدمة موقوفة مؤقتاً» وبيقطع المتصلين فوراً
+  const toggleDevice=async(deviceId:string,activate:boolean)=>{
+    if(!admin) return
+    setDevToggling(deviceId)
+    try{
+      const res=await fetch('/api/admin/devices',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({adminId:admin.id,deviceId,isActive:activate})})
+      const d=await res.json()
+      if(d.success){
+        setDevices(prev=>prev.map(x=>x.id===deviceId?{...x,isActive:activate}:x))
+        setMsg(activate
+          ?'▶️ تم تشغيل الجهاز — صفحة تسجيل الدخول رجعت عادية فوراً والعملاء يقدروا يدخلوا الكروت'
+          :`⛔ تم إيقاف الجهاز — صفحة تسجيل الدخول بقت «الخدمة موقوفة مؤقتاً»${d.sessionsEnded?` واتقطع ${d.sessionsEnded} متصل`:''}. أول ما تشغّله من نفس الزر بترجع طبيعية على طول`)
+      }
+      else setMsg('❌ '+(d.error||'فشل تغيير حالة الجهاز'))
+    }catch{setMsg('❌ فشل الاتصال بالسيرفر — جرّب تاني')}
+    setDevToggling(null);setDevConfirm(null)
   }
   const onLogin=(a:Admin)=>{
     setAdmin(a)
@@ -815,6 +838,17 @@ export default function DashboardPage() {
                     <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:7,flexShrink:0}}>
                       <span style={{padding:'3px 9px',borderRadius:20,fontSize:11,background:d.isActive?'rgba(0,230,118,0.12)':'rgba(255,68,68,0.12)',color:d.isActive?'#00E676':'#FF4444',border:`1px solid ${d.isActive?'rgba(0,230,118,0.25)':'rgba(255,68,68,0.25)'}`}}>{d.isActive?'● نشط':'● متوقف'}</span>
                       <ScriptStatusBadge d={d}/>
+                      {d.isActive?(
+                        <button onClick={()=>setDevConfirm({id:d.id,name:d.name,activate:false})} disabled={devToggling===d.id}
+                          style={{padding:'5px 12px',borderRadius:8,border:'1px solid rgba(255,68,68,0.35)',background:'rgba(255,68,68,0.1)',color:'#FF4444',fontFamily:'Cairo,sans-serif',fontSize:11,fontWeight:700,cursor:'pointer',opacity:devToggling===d.id?0.6:1}}>
+                          {devToggling===d.id?'⏳':'⛔ إيقاف الجهاز'}
+                        </button>
+                      ):(
+                        <button onClick={()=>toggleDevice(d.id,true)} disabled={devToggling===d.id}
+                          style={{padding:'5px 12px',borderRadius:8,border:'1px solid rgba(0,230,118,0.35)',background:'rgba(0,230,118,0.1)',color:'#00E676',fontFamily:'Cairo,sans-serif',fontSize:11,fontWeight:700,cursor:'pointer',opacity:devToggling===d.id?0.6:1}}>
+                          {devToggling===d.id?'⏳':'▶️ تشغيل الجهاز'}
+                        </button>
+                      )}
                       <button onClick={()=>setTab('config')} style={{padding:'5px 10px',background:'#111B2D',border:'1px solid #1C2A40',borderRadius:8,color:'#6B8CAE',fontFamily:'Cairo,sans-serif',fontSize:11,cursor:'pointer'}}>⚙️ سكريبت</button>
                     </div>
                   </div>
@@ -824,6 +858,26 @@ export default function DashboardPage() {
                   </div>
                 </div>
               ))}
+
+              {/* مودال تأكيد إيقاف الجهاز — داخلي ومضمون (window.confirm ممكن يتحجب من المتصفح ويزر يبقى ميت) */}
+              {devConfirm&&(
+                <div style={{position:'fixed',inset:0,zIndex:300,background:'rgba(0,0,0,0.75)',display:'flex',alignItems:'center',justifyContent:'center',padding:16}} onClick={()=>setDevConfirm(null)}>
+                  <div style={{background:'#0C1420',border:'1px solid #1C2A40',borderRadius:16,padding:22,width:'100%',maxWidth:360,boxShadow:'0 20px 60px rgba(0,0,0,0.6)'}} onClick={e=>e.stopPropagation()}>
+                    <div style={{fontSize:36,textAlign:'center',marginBottom:10}}>⛔</div>
+                    <div style={{fontSize:14,fontWeight:800,color:'#E2F0FB',textAlign:'center',marginBottom:8}}>تأكيد إيقاف «{devConfirm.name}»</div>
+                    <div style={{fontSize:12,color:'#6B8CAE',textAlign:'center',lineHeight:1.9,marginBottom:18,background:'#070B12',borderRadius:10,padding:'10px 12px'}}>
+                      • صفحة تسجيل الدخول هتبقى «الخدمة موقوفة مؤقتاً» لكل العملاء<br/>
+                      • المتصلين حالياً هيتقطعوا فوراً<br/>
+                      • أول ما تشغّل الجهاز من نفس الزر كل حاجة ترجع طبيعية<br/>
+                      <span style={{color:'#fb923c'}}>عايز تمنع كرت معين بس؟ تاب الكروت → ⛔ إيقاف جنب الكرت</span>
+                    </div>
+                    <div style={{display:'flex',gap:10}}>
+                      <button onClick={()=>toggleDevice(devConfirm.id,false)} disabled={devToggling===devConfirm.id} style={{flex:1,padding:'11px',borderRadius:10,border:'none',background:'#FF4444',color:'#fff',fontFamily:'Cairo,sans-serif',fontSize:13,fontWeight:800,cursor:'pointer',opacity:devToggling===devConfirm.id?0.6:1}}>{devToggling===devConfirm.id?'⏳ جاري الإيقاف...':'نعم، إيقاف الجهاز'}</button>
+                      <button onClick={()=>setDevConfirm(null)} style={{flex:1,padding:'11px',borderRadius:10,border:'1px solid #1C2A40',background:'#111B2D',color:'#6B8CAE',fontFamily:'Cairo,sans-serif',fontSize:13,fontWeight:700,cursor:'pointer'}}>إلغاء</button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

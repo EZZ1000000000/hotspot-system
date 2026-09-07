@@ -1,6 +1,7 @@
 // GET  /api/admin/devices?adminId=xxx
 // POST /api/admin/devices   — GatewayID + tunnelPort بيتولدوا تلقائي
 // PUT  /api/admin/devices   — تعديل جهاز
+// PATCH /api/admin/devices  — إيقاف/تشغيل جهاز (من لوحة الكافيه نفسها)
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { randomBytes } from 'crypto'
@@ -142,5 +143,41 @@ export async function PUT(req: NextRequest) {
   } catch (err: any) {
     if (err.code === 'P2025') return NextResponse.json({ error: 'الجهاز غير موجود' }, { status: 404 })
     return NextResponse.json({ error: 'Server error' }, { status: 500 })
+  }
+}
+
+// PATCH — إيقاف/تشغيل جهاز من لوحة الكافيه
+// body: { adminId, deviceId, isActive }
+// الإيقاف بيقفل صفحة الدخول بـ«الخدمة موقوفة مؤقتاً» وبيقطع الجلسات النشطة فوراً
+export async function PATCH(req: NextRequest) {
+  try {
+    const { adminId, deviceId, isActive } = await req.json()
+    if (!adminId || !deviceId || isActive === undefined)
+      return NextResponse.json({ error: 'بيانات ناقصة (adminId, deviceId, isActive)' }, { status: 400 })
+
+    // تحقق ملكية — الجهاز لازم يكون بتاع الأدمن ده فعلاً (أمان)
+    const owned = await prisma.device.findFirst({
+      where: { id: deviceId, hotspotAdminId: adminId },
+    })
+    if (!owned) return NextResponse.json({ error: 'الجهاز غير موجود أو مش بتاعك' }, { status: 404 })
+
+    const device = await prisma.device.update({
+      where: { id: deviceId },
+      data:  { isActive },
+    })
+
+    // لو إيقاف — اقفل كل الجلسات النشطة فوراً (نفس سلوك زر السوبر أدمن)
+    let sessionsEnded = 0
+    if (!isActive) {
+      const r = await prisma.session.updateMany({
+        where: { deviceId, status: 'ACTIVE' },
+        data:  { status: 'ENDED', endedAt: new Date(), endReason: 'ADMIN_KICK' },
+      })
+      sessionsEnded = r.count
+    }
+
+    return NextResponse.json({ success: true, device, sessionsEnded })
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message || 'Server error' }, { status: 500 })
   }
 }
