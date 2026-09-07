@@ -463,21 +463,50 @@ case "$EP" in
     # صفحة الدخول — بتتخدم من كاش الراوتر (فورية 100%)
     # بتتحدث من السيرفر كل 5 دقايق (الكرون) أو أول ما الكاش يعدي
     # ولو السيرفر مش واصل → بنخدم آخر نسخة محفوظة بدل صفحة بيضا
+    # ⚠️ قاعدة ذهبية: صفحة «الخدمة موقوفة» عمرها ما تتخزن في الكاش —
+    # تخزينها كان بيسبب إن الراوتر يفضل يعرضها للموبايلات حتى بعد ما
+    # الجهاز يترفع من اللوحة (صفحة قديمة عالقة) — دلوقتي بتقدم حية بلا تخزين
     CACHE=/tmp/hotspot_portal.html
     CTS=/tmp/hotspot_portal.ts
     NOW=$(date +%s)
     TS=$(cat "$CTS" 2>/dev/null)
     case "$TS" in ''|*[!0-9]*) TS=0 ;; esac
     AGE=$((NOW - TS))
-    if [ ! -s "$CACHE" ] || [ "$AGE" -gt 300 ]; then
-      RESP=$(https_get "https://\${SRV}/api/portal/page?gw_id=\${GW}")
-      if [ -n "$RESP" ]; then
+    # الكاش الحالي نفسه صفحة توقف قديمة؟ مالوش أي قيمة — نتجاهله ونطلب من السيرفر
+    STALE_STOP=0
+    if [ -s "$CACHE" ]; then
+      case "\$(cat "$CACHE" 2>/dev/null)" in
+        *"الخدمة موقوفة"*) STALE_STOP=1 ;;
+      esac
+    fi
+    if [ ! -s "$CACHE" ] || [ "\$STALE_STOP" = "1" ] || [ "\$AGE" -gt 300 ]; then
+      RESP=\$(https_get "https://\${SRV}/api/portal/page?gw_id=\${GW}")
+      case "\$RESP" in
+        *"الخدمة موقوفة"*)
+          # الجهاز موقوف حالياً من اللوحة → نقدم الصفحة للمستخدم ده بس
+          # من غير أي تخزين — أول ما يترفع أول طلب جديد يجيب الصفحة العادية فوراً
+          echo "Content-Type: text/html; charset=utf-8"
+          echo "Cache-Control: no-store"
+          echo ""
+          printf '%s' "\$RESP"
+          exit 0
+          ;;
+      esac
+      if [ -n "\$RESP" ]; then
         # تعديل نقطتين في الصفحة:
         #  1) تسجيل الدخول يروح للجسر المحلي بدل السيرفر (الموبايل مش واصل السيرفر أصلاً)
         #  2) زرار صفحة الجلسة يتعامل مع السيرفر مباشرة (بعد التفعيل الموبايل يبقى مسموح له)
-        printf '%s' "$RESP" | sed "s|fetch('/api/portal/login'|fetch('/cgi-bin/go?ep=/apilogin/'|; s|window.location.replace('/session?token='|window.location.replace('https://\${SRV}/session?token='|" > "$CACHE.t" \
-          && { mv "$CACHE.t" "$CACHE"; date +%s > "$CTS"; }
-        rm -f "$CACHE.t"
+        printf '%s' "\$RESP" | sed "s|fetch('/api/portal/login'|fetch('/cgi-bin/go?ep=/apilogin/'|; s|window.location.replace('/session?token='|window.location.replace('https://\${SRV}/session?token='|" > "\$CACHE.t" \\
+          && { mv "\$CACHE.t" "\$CACHE"; date +%s > "\$CTS"; }
+        rm -f "\$CACHE.t"
+      elif [ "\$STALE_STOP" = "1" ]; then
+        # السيرفر مش واصل والكاش كان صفحة توقف قديمة → صفحة انتظار بتحدد لوحدها
+        # بدل ما نعلق الموبايلات على صفحة موقوفة قديمة بعد ما الجهاز رجع شغال
+        echo "Content-Type: text/html; charset=utf-8"
+        echo "Cache-Control: no-store"
+        echo ""
+        echo "<!DOCTYPE html><html dir='rtl'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><meta http-equiv='refresh' content='10'></head><body style='font-family:sans-serif;background:#070B12;color:#00D4FF;text-align:center;padding:60px 20px'><h2>📡 بجهّز صفحة الدخول...</h2><p style='color:#6B8CAE'>الصفحة هتظهر تلقائياً خلال ثواني — استنى شوية</p></body></html>"
+        exit 0
       fi
     fi
     echo "Content-Type: text/html; charset=utf-8"
