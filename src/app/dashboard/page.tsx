@@ -650,6 +650,15 @@ export default function DashboardPage() {
   },[])
 
   const loadVouchers=async(adminId:string)=>{const res=await fetch(`/api/admin/vouchers?adminId=${adminId}`);const data=await res.json();if(Array.isArray(data)) setVouchers(data)}
+  // ⛔ إيقاف / ▶️ تشغيل كروت — إيقاف الكرت بيمنعه هو بس من الشغل،
+  // الصفحة بتاعة تسجيل الدخول والشبكة كله زي ما هي (مش زي إيقاف الجهاز)
+  const toggleVouchers=async(action:'disable'|'enable',ids:string[])=>{
+    if(!admin||ids.length===0) return
+    const res=await fetch('/api/admin/vouchers',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({adminId:admin.id,ids,action})})
+    const d=await res.json()
+    if(d.success){setMsg(action==='disable'?`⛔ تم إيقاف ${d.updated} كارت — الشبكة وصفحة الدخول زي ما هي`:`▶️ تم تشغيل ${d.updated} كارت`);loadVouchers(admin.id);setSelectedVouchers(new Set())}
+    else setMsg('❌ '+(d.error||'خطأ'))
+  }
   const onLogin=(a:Admin)=>{
     setAdmin(a)
     loadAll(a)
@@ -903,10 +912,20 @@ export default function DashboardPage() {
                 <div style={{display:'flex',gap:7,flexWrap:'wrap'}}>
                   <input placeholder="🔍 ابحث..." style={{...S.input,width:140,padding:'7px 10px',fontSize:12}} onChange={e=>{const q=e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,'');if(!q){loadVouchers(admin.id);return};setVouchers(v=>v.filter(x=>x.code.replace(/-/g,'').includes(q)))}}/>
                   {selectedVouchers.size>0&&(
+                    <>
                     <button onClick={()=>window.open(`/print?ids=${Array.from(selectedVouchers).join(',')}`,'_blank')}
                       style={{...S.btn('linear-gradient(135deg,#f59e0b,#f97316)'),padding:'8px 12px',fontSize:12}}>
                       🖨️ طباعة المختارة ({selectedVouchers.size})
                     </button>
+                    <button onClick={()=>toggleVouchers('enable',[...selectedVouchers])}
+                      style={{...S.btn('rgba(0,230,118,0.12)','#00E676'),border:'1px solid rgba(0,230,118,0.3)',padding:'8px 12px',fontSize:12}}>
+                      ▶️ تشغيل المحدد
+                    </button>
+                    <button onClick={()=>toggleVouchers('disable',[...selectedVouchers])}
+                      style={{...S.btn('rgba(255,68,68,0.12)','#FF4444'),border:'1px solid rgba(255,68,68,0.3)',padding:'8px 12px',fontSize:12}}>
+                      ⛔ إيقاف المحدد
+                    </button>
+                    </>
                   )}
                   <button onClick={()=>window.open(`/print?adminId=${admin.id}`,'_blank')}
                     style={{...S.btn('linear-gradient(135deg,#0088CC,#00D4FF)'),padding:'8px 12px',fontSize:12}}>
@@ -937,7 +956,7 @@ export default function DashboardPage() {
                           onChange={e=>setSelectedVouchers(e.target.checked?new Set(vouchers.map(v=>v.id)):new Set())}
                           style={{cursor:'pointer',accentColor:'#0088CC',width:14,height:14}}/>
                       </th>
-                      {['الكود','النوع','الداتا','الوقت','الاستخدامات','الحالة'].map(h=>(<th key={h} style={{padding:'9px 10px',color:'#6B8CAE',fontWeight:600,textAlign:'right',whiteSpace:'nowrap'}}>{h}</th>))}
+                      {['الكود','النوع','الداتا','الوقت','الاستخدامات','الحالة','إجراءات'].map(h=>(<th key={h} style={{padding:'9px 10px',color:'#6B8CAE',fontWeight:600,textAlign:'right',whiteSpace:'nowrap'}}>{h}</th>))}
                     </tr></thead>
                     <tbody>
                       {vouchers.map(v=>(
@@ -970,7 +989,16 @@ export default function DashboardPage() {
                               <span style={{fontSize:11,color:'#354E6A'}}>—</span>
                             )}
                           </td>
-                          <td style={{padding:'9px 10px'}}><span style={{padding:'2px 7px',borderRadius:20,fontSize:11,fontWeight:600,background:v.status==='UNUSED'?'rgba(107,140,174,0.12)':v.status==='ACTIVE'?'rgba(0,230,118,0.12)':'rgba(255,68,68,0.12)',color:v.status==='UNUSED'?'#6B8CAE':v.status==='ACTIVE'?'#00E676':'#FF4444',border:`1px solid ${v.status==='UNUSED'?'rgba(107,140,174,0.25)':v.status==='ACTIVE'?'rgba(0,230,118,0.25)':'rgba(255,68,68,0.25)'}`}}>{v.status==='UNUSED'?'غير مستخدم':v.status==='ACTIVE'?'نشط':v.status==='DEPLETED'?'نفدت الداتا':'انتهى الوقت'}</span></td>
+                          <td style={{padding:'9px 10px'}}><span style={{padding:'2px 7px',borderRadius:20,fontSize:11,fontWeight:600,background:v.status==='UNUSED'?'rgba(107,140,174,0.12)':v.status==='ACTIVE'?'rgba(0,230,118,0.12)':v.status==='DISABLED'?'rgba(255,68,68,0.12)':'rgba(255,68,68,0.12)',color:v.status==='UNUSED'?'#6B8CAE':v.status==='ACTIVE'?'#00E676':v.status==='DISABLED'?'#FF4444':'#FF4444',border:`1px solid ${v.status==='UNUSED'?'rgba(107,140,174,0.25)':v.status==='ACTIVE'?'rgba(0,230,118,0.25)':v.status==='DISABLED'?'rgba(255,68,68,0.25)':'rgba(255,68,68,0.25)'}`}}>{v.status==='UNUSED'?'غير مستخدم':v.status==='ACTIVE'?'نشط':v.status==='DISABLED'?'⛔ موقوف':v.status==='DEPLETED'?'نفدت الداتا':'انتهى الوقت'}</span></td>
+                          <td style={{padding:'9px 8px',whiteSpace:'nowrap'}} onClick={e=>e.stopPropagation()}>
+                            {v.status==='DISABLED'?(
+                              <button onClick={()=>toggleVouchers('enable',[v.id])} title="تشغيل الكرت"
+                                style={{padding:'4px 10px',borderRadius:7,border:'1px solid rgba(0,230,118,0.3)',background:'rgba(0,230,118,0.1)',color:'#00E676',fontFamily:'Cairo,sans-serif',fontSize:11,fontWeight:700,cursor:'pointer'}}>▶️ تشغيل</button>
+                            ):(v.status==='UNUSED'||v.status==='ACTIVE')?(
+                              <button onClick={()=>toggleVouchers('disable',[v.id])} title="إيقاف الكرت — الصفحة وصفحة الدخول مش هتتأثر خالص"
+                                style={{padding:'4px 10px',borderRadius:7,border:'1px solid rgba(255,68,68,0.3)',background:'rgba(255,68,68,0.08)',color:'#FF4444',fontFamily:'Cairo,sans-serif',fontSize:11,fontWeight:700,cursor:'pointer'}}>⛔ إيقاف</button>
+                            ):(<span style={{fontSize:11,color:'#354E6A'}}>—</span>)}
+                          </td>
                         </tr>
                       ))}
                     </tbody>

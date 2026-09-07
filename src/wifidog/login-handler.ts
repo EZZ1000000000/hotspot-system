@@ -35,6 +35,16 @@ export async function handlePortalLogin(body: {
   if (!device.isActive)
     return { success: false, message: '⛔ الخدمة موقوفة مؤقتاً من إدارة الشبكة — تواصل مع الإدارة' }
 
+  // ── الاشتراك (الأدمن) موقوف؟ ─────────────────────────────────────────────
+  // ملاحظة مهمة: إيقاف الأدمن (الاشتراك) مش إيقاف للشبكة — صفحة تسجيل الدخول
+  // العادية تفضل ظاهرة طبيعية، بس مفيش كرت جديد هيتفعل لحد ما الاشتراك يترفع
+  const admin = await prisma.hotspotAdmin.findUnique({
+    where:  { id: device.hotspotAdminId },
+    select: { isActive: true },
+  })
+  if (admin && !admin.isActive)
+    return { success: false, message: '⛔ الاشتراك موقوف حالياً من إدارة النظام — تواصل مع الإدارة' }
+
   // -- دور على الكود ---------------------------------------------------------
   let voucher = await prisma.voucher.findUnique({ where: { code: formattedCode } })
   if (!voucher) voucher = await prisma.voucher.findUnique({ where: { code: cleanCode } })
@@ -48,6 +58,12 @@ export async function handlePortalLogin(body: {
     })
   }
   if (!voucher) return { success: false, message: 'الكود غير صحيح' }
+
+  // ── كرت موقوف من الإدارة ──
+  // إيقاف الكرت بيمنعه هو بس — الشبكة وصفحة الدخول وطبيعتهم عادي
+  // والمستخدم يشوف رسالة واضحة جوه صفحة تسجيل الدخول العادية
+  if (voucher.status === 'DISABLED')
+    return { success: false, message: '⛔ هذا الكرت موقوف من الإدارة — اطلب كرت جديد' }
 
   if (voucher.status === 'EXPIRED' || voucher.status === 'DEPLETED')
     return { success: false, message: 'هذا الكود منتهي الصلاحية' }

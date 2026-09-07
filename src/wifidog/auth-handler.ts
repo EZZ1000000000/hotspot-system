@@ -8,6 +8,7 @@
 // Auth: -1 يخلي wifidog يوقف الاتصال ويرمي error
 // لو DB فشلت في counters → ارجع Auth: 1 (المستخدم يكمل)
 // الجهاز الموقوف من اللوحة (isActive=false) → Auth: 0 دايماً في المرحلتين — قطع الأكسسز للعميل المتأخر
+// الكرت الموقوف من الإدارة (status=DISABLED) → إنهاء الجلسة وقطع فوري برضه — من غير ما يأثر على باقي الشبكة
 // =============================================
 import { prisma } from '../lib/prisma'
 import { isVoucherDepleted, bytesToMB } from '../lib/voucher'
@@ -31,6 +32,16 @@ export async function handleWifidogAuth(searchParams: URLSearchParams) {
       // الجهاز موقوف من اللوحة (عميل مدفّعش) → قطع فوري بغض النظر عن حالة الجلسة
       if (session.device && !session.device.isActive) return 'Auth: 0'
       if (session.status === 'ENDED') return 'Auth: 0'
+
+      // الكرت اتوقف من الإدارة → ننهي الجلسة ونقطع — باقي الشبكة زي ما هي
+      if (session.voucher && session.voucher.status === 'DISABLED') {
+        const nowD = new Date()
+        prisma.session.update({
+          where: { id: session.id },
+          data:  { status: 'ENDED', endedAt: nowD, endReason: 'ADMIN_KICK' },
+        }).catch(() => {})
+        return 'Auth: 0'
+      }
 
       if (session.status === 'ACTIVE') {
         const now = new Date()
@@ -83,6 +94,18 @@ export async function handleWifidogAuth(searchParams: URLSearchParams) {
     // الجهاز موقوف من اللوحة → الراوتر بيفصل العميل أول ما يعمل counters (كل 5 دقايق)
     if (session.device && !session.device.isActive) return 'Auth: 0'
     if (session.status !== 'ACTIVE') return 'Auth: 0'
+
+    // الكرت اتوقف من الإدارة → قطع في أول counters
+    if (session.voucher && session.voucher.status === 'DISABLED') {
+      const nowD = new Date()
+      Promise.all([
+        prisma.session.update({
+          where: { id: session.id },
+          data:  { status: 'ENDED', endedAt: nowD, endReason: 'ADMIN_KICK', lastPingAt: nowD },
+        }).catch(() => {}),
+      ])
+      return 'Auth: 0'
+    }
 
     const now         = new Date()
     const totalInMB   = bytesToMB(incoming)

@@ -229,7 +229,7 @@ function AdminsTab({ sa }:{ sa:SA }) {
     const r=await rpc(srv,'/api/superadmin/admin-devices',{method:'POST',body:{deviceId,isActive:!isActive}})
     if(r&&r.success){
       setMsg(!isActive
-        ?'⛔ تم إيقاف الجهاز — مفيش مستخدم جديد هيعرف يدخل، والمتصلين الحاليين هتقفل شبكتهم خلال 5 دقايق كحد أقصى'
+        ?'⛔ تم إيقاف الجهاز — صفحة تسجيل الدخول بقت «الخدمة موقوفة مؤقتاً» والمتصلين هيتقفلوا خلال 5 دقايق كحد أقصى. أول ما تشغّل الجهاز من نفس الزر الصفحة بترجع طبيعية على طول'
         :'▶️ تم تشغيل الجهاز — النت رجع يشتغل والعملاء يعيدوا إدخال الكود من صفحة الدخول')
     }else{
       setMsg('❌ فشل تغيير حالة الجهاز'+(r&&r.error?': '+r.error:' — جرّب تاني'))
@@ -579,8 +579,8 @@ function MonitorTab() {
       const r=await rpc((d as any).__srv||'gamma','/api/superadmin/device-toggle',{method:'POST',body:{deviceId:d.id,isActive:!d.isActive}})
       if(r&&r.success){
         setToggleMsg(!d.isActive
-          ?`⛔ تم إيقاف «${d.name}» — مفيش مستخدم جديد هيعرف يدخل فوراً، والمتصلين الحاليين هتقفل شبكتهم خلال 5 دقايق كحد أقصى`
-          :`▶️ تم تشغيل «${d.name}» — النت رجع يشتغل، والعملاء يعيدوا إدخال الكود من صفحة الدخول`)
+          ?`⛔ تم إيقاف «${d.name}» — صفحة تسجيل الدخول بقت «الخدمة موقوفة مؤقتاً» والمتصلين هيتقفلوا خلال 5 دقايق كحد أقصى. أول ما تضغط ▶️ تشغيل الصفحة بترجع طبيعية على طول`
+          :`▶️ تم تشغيل «${d.name}» — صفحة تسجيل الدخول رجعت عادية فوراً، والعملاء يقدروا يدخلوا الكروت عادي`)
       }else{
         setToggleMsg('❌ فشل تغيير حالة الجهاز'+(r&&r.error?': '+r.error:' — جرّب تاني'))
       }
@@ -769,7 +769,7 @@ function VouchersTab() {
       const srv=selAdmin?admins.find(a=>a.id===selAdmin)?.__srv:undefined
       const body= confirm.action==='delete'
         ? {ids,adminId:selAdmin||undefined,status:ids?undefined:status}
-        : {ids,adminId:selAdmin||undefined,fromStatus:ids?undefined:status,toStatus:'EXPIRED'}
+        : {ids,adminId:selAdmin||undefined,fromStatus:ids?undefined:status,toStatus:confirm.action==='disable'?'DISABLED':'UNUSED'}
       let okCount=0
       if(selAdmin){
         const d=await rpc(srv,'/api/superadmin/vouchers',{method:confirm.action==='delete'?'DELETE':'PATCH',body})
@@ -784,19 +784,19 @@ function VouchersTab() {
     setConfirm(null);setLoading(false)
   }
 
-  const sColor:Record<string,string>={UNUSED:'#6B8CAE',ACTIVE:'#00E676',DEPLETED:'#FF4444',EXPIRED:'#fb923c'}
-  const sLabel:Record<string,string>={UNUSED:'غير مستخدم',ACTIVE:'نشط',DEPLETED:'نفدت',EXPIRED:'انتهى'}
+  const sColor:Record<string,string>={UNUSED:'#6B8CAE',ACTIVE:'#00E676',DEPLETED:'#FF4444',EXPIRED:'#fb923c',DISABLED:'#FF4444'}
+  const sLabel:Record<string,string>={UNUSED:'غير مستخدم',ACTIVE:'نشط',DEPLETED:'نفدت',EXPIRED:'انتهى',DISABLED:'⛔ موقوف'}
 
   return (
     <div>
       {confirm&&(
         <div style={{position:'fixed',inset:0,zIndex:200,background:'rgba(0,0,0,0.7)',display:'flex',alignItems:'center',justifyContent:'center',padding:16}} onClick={()=>setConfirm(null)}>
           <div style={{...S.card,width:'100%',maxWidth:340}} onClick={e=>e.stopPropagation()}>
-            <div style={{fontSize:36,textAlign:'center',marginBottom:10}}>{confirm.action==='delete'?'🗑️':'⛔'}</div>
+            <div style={{fontSize:36,textAlign:'center',marginBottom:10}}>{confirm.action==='delete'?'🗑️':confirm.action==='enable'?'▶️':'⛔'}</div>
             <div style={{fontSize:14,fontWeight:700,color:'#E2F0FB',textAlign:'center',marginBottom:6}}>{confirm.label}</div>
             <div style={{fontSize:12,color:'#6B8CAE',textAlign:'center',marginBottom:18}}>{selected.size>0?`${selected.size} كارت`:`كل الكروت (${total})`}</div>
             <div style={{display:'flex',gap:10}}>
-              <button onClick={doAction} style={{...S.btn(confirm.action==='delete'?'#FF4444':'#fb923c','#fff'),flex:1}}>{confirm.label}</button>
+              <button onClick={doAction} style={{...S.btn(confirm.action==='delete'?'#FF4444':confirm.action==='enable'?'#00E676':'#fb923c',confirm.action==='enable'?'#000':'#fff'),flex:1}}>{confirm.label}</button>
               <button onClick={()=>setConfirm(null)} style={{...S.btn('#111B2D','#6B8CAE'),border:'1px solid #1C2A40',flex:1}}>إلغاء</button>
             </div>
           </div>
@@ -805,7 +805,7 @@ function VouchersTab() {
       <div style={{...S.card,marginBottom:12,padding:12}}>
         <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'flex-end'}}>
           <div style={{flex:'1 1 160px'}}><label style={S.label}>الأدمن (كل السيرفرات)</label><select style={{...S.input,padding:'8px 11px',fontSize:12}} value={selAdmin} onChange={e=>setSelAdmin(e.target.value)}><option value="">كل الأدمنز على كل السيرفرات</option>{admins.map(a=><option key={a.id} value={a.id}>{a.name} · {SERVERS[a.__srv||'gamma']?.label}</option>)}</select></div>
-          <div style={{flex:'1 1 130px'}}><label style={S.label}>الحالة</label><select style={{...S.input,padding:'8px 11px',fontSize:12}} value={status} onChange={e=>setStatus(e.target.value)}><option value="USED">مستخدمة</option><option value="UNUSED">غير مستخدمة</option><option value="ACTIVE">نشطة</option><option value="DEPLETED">نفدت</option><option value="EXPIRED">انتهى</option><option value="ALL">الكل</option></select></div>
+          <div style={{flex:'1 1 130px'}}><label style={S.label}>الحالة</label><select style={{...S.input,padding:'8px 11px',fontSize:12}} value={status} onChange={e=>setStatus(e.target.value)}><option value="USED">مستخدمة</option><option value="UNUSED">غير مستخدمة</option><option value="ACTIVE">نشطة</option><option value="DISABLED">موقوفة</option><option value="DEPLETED">نفدت</option><option value="EXPIRED">انتهى</option><option value="ALL">الكل</option></select></div>
           <button onClick={loadVouchers} style={{...S.btn('#111B2D','#6B8CAE'),border:'1px solid #1C2A40',padding:'8px 14px',fontSize:12}}>🔍 بحث</button>
         </div>
       </div>
@@ -821,7 +821,8 @@ function VouchersTab() {
             rows.forEach(v=>{const k=(v as any).__srv||'gamma';(bySrv[k]=bySrv[k]||[]).push(v.id)})
             Object.entries(bySrv).forEach(([k,ids])=>window.open(`${SERVERS[k]?.url||''}/print?ids=${ids.join(',')}&sa=1`, '_blank'))
           }} style={{...S.btn('rgba(0,212,255,0.12)','#00D4FF'),border:'1px solid rgba(0,212,255,0.3)',fontSize:11,padding:'6px 12px'}}>🖨️ طباعة{selected.size>0?` (${selected.size})`:` (${vouchers.length})`}</button>
-          <button onClick={()=>setConfirm({action:'disable',label:'⛔ تعطيل'})} style={{...S.btn('rgba(251,146,60,0.12)','#fb923c'),border:'1px solid rgba(251,146,60,0.3)',fontSize:11,padding:'6px 12px'}}>⛔ تعطيل{selected.size>0?` (${selected.size})`:''}</button>
+          <button onClick={()=>setConfirm({action:'disable',label:'⛔ إيقاف الكروت'})} title="إيقاف الكرت بيمنعه هو بس — الشبكة وصفحة الدخول مش هيتأثروا خالص" style={{...S.btn('rgba(251,146,60,0.12)','#fb923c'),border:'1px solid rgba(251,146,60,0.3)',fontSize:11,padding:'6px 12px'}}>⛔ إيقاف{selected.size>0?` (${selected.size})`:''}</button>
+          <button onClick={()=>setConfirm({action:'enable',label:'▶️ تشغيل الكروت'})} style={{...S.btn('rgba(0,230,118,0.12)','#00E676'),border:'1px solid rgba(0,230,118,0.3)',fontSize:11,padding:'6px 12px'}}>▶️ تشغيل{selected.size>0?` (${selected.size})`:''}</button>
           <button onClick={()=>setConfirm({action:'delete',label:'🗑️ حذف'})} style={{...S.btn('rgba(255,68,68,0.12)','#FF4444'),border:'1px solid rgba(255,68,68,0.3)',fontSize:11,padding:'6px 12px'}}>🗑️ حذف{selected.size>0?` (${selected.size})`:''}</button>
         </div>
       )}
@@ -2466,7 +2467,7 @@ function DevicesControlTab({ sa }: { sa: SA }) {
     <div>
       <div style={{...S.card,marginBottom:14,padding:12,background:'rgba(251,146,60,0.05)',border:'1px solid rgba(251,146,60,0.2)'}}>
         <div style={{fontSize:12,color:'#fb923c',fontWeight:700}}>⚠️ تنبيه مهم</div>
-        <div style={{fontSize:11,color:'#6B8CAE',marginTop:4}}>إيقاف الجهاز بيمنع فوراً أي مستخدم جديد، والجلسات النشطة بتتقفل خلال 5 دقايق كحد أقصى (الراوتر بيفحص كل 5 دقايق). لازم تتأكد قبل الإيقاف.</div>
+        <div style={{fontSize:11,color:'#6B8CAE',marginTop:4}}>إيقاف الجهاز بيمنع فوراً أي مستخدم جديد، وصفحة تسجيل الدخول هتبقى «الخدمة موقوفة مؤقتاً» لحد ما تضغط تشغيل — أول ما تشغّل الصفحة بترجع طبيعية على طول. الجلسات النشطة بتتقفل خلال 5 دقايق كحد أقصى. عايز تمنع كرت معين بس من غير ما توقف الشبكة؟ استخدم تاب الكروت → زر إيقاف جنب الكرت.</div>
       </div>
 
       {msg && <div style={S.msg(msg.startsWith('✅'))}>{msg}<span onClick={()=>setMsg('')} style={{cursor:'pointer'}}>✕</span></div>}
