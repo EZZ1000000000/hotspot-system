@@ -132,6 +132,9 @@ rm -f /usr/bin/hotspot-ssid-sync /usr/bin/hotspot-watchdog /usr/bin/hotspot-tunn
 #    → الموبايل بياخد نت من راوتر الشبكة العلوي على طول (بيفتح نت من غير صفحة دخول)
 #    → أو بيفضل عالق على "جاري الاتصال" (خادمي DHCP بيتصارعوا)
 #  الكشف: منفذ WAN فاضي + فيه كابل شغال في منفذ LAN → نحوّل المنفذ ده يبقى WAN
+#  v6: بنجرب كل منفذ LAN فيه كابل لحد ما نلاقي اللي بيجيب إنترنت فعلاً —
+#      مش "أول منفذ فيه لينك" زي قبل كده (كان بيفشل بصمت لو المنفذ مش هو
+#      المودم أو الكونفيج قديم الطراز) — وبيرجّع أي منفذ بيفشل لمكانه بالظبط
 # ────────────────────────────────────────────────
 have_link(){ [ -f "/sys/class/net/$1/carrier" ] && [ "$(cat /sys/class/net/$1/carrier 2>/dev/null)" = "1" ]; }
 WANDEV=$(uci -q get network.wan.device 2>/dev/null)
@@ -140,50 +143,119 @@ WANDEV=$(uci -q get network.wan.device 2>/dev/null)
 if have_link "$WANDEV"; then
   echo "✅ كابل الإنترنت في مكانه الصح (منفذ: $WANDEV)"
 else
-  REBPORT=''
-  for P in lan1 lan2 lan3 lan4; do
-    if have_link "$P"; then REBPORT=$P; break; fi
+  # الحالة الأصلية — بنحفظها عشان نرجّعها بالظبط لو ولا محاولة نجحت
+  OLD_WANDEV="$WANDEV"
+  OLD_WAN_STYLE=device
+  uci -q get network.wan >/dev/null 2>&1 || OLD_WAN_STYLE=none
+  if [ "$OLD_WAN_STYLE" = "device" ] && [ -z "$(uci -q get network.wan.device 2>/dev/null)" ] && [ -n "$(uci -q show network.wan 2>/dev/null | grep '\.ifname=')" ]; then
+    OLD_WAN_STYLE=ifname
+  fi
+  OLD_LAN_IFNAME=$(uci -q get network.lan.ifname 2>/dev/null)
+  OLD_LAN_PORTS=''
+  i=0
+  while uci -q show network.@device[$i] >/dev/null 2>&1; do
+    [ "$(uci -q get network.@device[$i].name)" = "br-lan" ] && OLD_LAN_PORTS="$(uci -q get network.@device[$i].ports 2>/dev/null)"
+    i=$((i+1))
   done
-  if [ -n "$REBPORT" ]; then
-    say "🔌 الكابل متركب في منفذ $REBPORT — هظبطه يبقى هو منفذ الإنترنت (WAN)"
-    # 1) شيل المنفذ من جسر الشبكة الداخلية (br-lan)
+
+  # شيل منفذ من جسر الشبكة الداخلية — بيدعم الكونفيج الجديد (@device/br-lan) والقديم (lan.ifname)
+  port_out_of_lan(){
     i=0
     while uci -q show network.@device[$i] >/dev/null 2>&1; do
-      [ "$(uci -q get network.@device[$i].name)" = "br-lan" ] && uci -q del_list network.@device[$i].ports="$REBPORT"
+      [ "$(uci -q get network.@device[$i].name)" = "br-lan" ] && uci -q del_list network.@device[$i].ports="$1"
       i=$((i+1))
     done
-    # 2) واجهة WAN تبقى على المنفذ ده (من غير ما نلمس نوع الاتصال)
-    if uci -q get network.wan >/dev/null 2>&1; then
-      if uci -q get network.wan.device >/dev/null 2>&1 || [ -n "$(uci -q show network.wan 2>/dev/null | grep '\.device=')" ]; then
-        uci set network.wan.device="$REBPORT"
-      else
-        uci set network.wan.ifname="$REBPORT"
+    if [ -n "$OLD_LAN_IFNAME" ] && printf '%s\n' $OLD_LAN_IFNAME | tr ' ' '\n' | grep -qx "$1"; then
+      uci set network.lan.ifname="$(printf '%s\n' $OLD_LAN_IFNAME | tr ' ' '\n' | grep -vx "$1" | tr '\n' ' ' | sed 's/ $//')"
+    fi
+    return 0
+  }
+  # رجّع جسر الشبكة الداخلية لحالته الأصلية بالظبط (من قائمة المنافذ الأصلية المحفوظة)
+  port_back_to_lan(){
+    i=0
+    while uci -q show network.@device[$i] >/dev/null 2>&1; do
+      if [ "$(uci -q get network.@device[$i].name)" = "br-lan" ]; then
+        uci -q delete network.@device[$i].ports 2>/dev/null
+        for WP in $OLD_LAN_PORTS; do
+          uci add_list network.@device[$i].ports="$WP"
+        done
       fi
-    else
-      uci set network.wan=interface
-      uci set network.wan.device="$REBPORT"
-      uci set network.wan.proto='dhcp'
-    fi
-    uci -q set network.wan6.device="$REBPORT" 2>/dev/null
-    uci commit network
-    # 3) تحميل الإعدادات — الجلسة ممكن تقطع لحظة وترجع
-    say "   ⏳ بحمّل إعدادات الشبكة (لو الاتصال قطع لحظة، استنى وأعد التصال)"
-    ubus call network reload >/dev/null 2>&1 || /etc/init.d/network restart >/dev/null 2>&1
-    NB=0
-    while [ $NB -lt 20 ]; do
-      sleep 3
-      ip -4 route show default 2>/dev/null | grep -q "dev $REBPORT" && break
-      NB=$((NB+1))
+      i=$((i+1))
     done
-    if ip -4 route show default 2>/dev/null | grep -q "dev $REBPORT"; then
-      echo "✅ الإنترنت اشتغل عن طريق منفذ $REBPORT"
+    [ -n "$OLD_LAN_IFNAME" ] && uci set network.lan.ifname="$OLD_LAN_IFNAME"
+    return 0
+  }
+  # واجهة WAN على منفذ معين — بنفس ستايل الكونفيج الموجود (device/ifname)
+  set_wan_port(){
+    uci -q get network.wan >/dev/null 2>&1 || { uci set network.wan=interface; uci set network.wan.proto='dhcp'; }
+    if [ "$OLD_WAN_STYLE" = "ifname" ]; then
+      uci set network.wan.ifname="$1"
     else
-      echo "⚠️  لسه مفيش إنترنت عن طريق $REBPORT — كمّل برضه بس ممكن التسطيب يفشل لو النت مش راجع"
-      echo "   → اتأكد إن الكابل اللي في $REBPORT هو كابل المودم/الراوتر الرئيسي فعلاً"
+      uci set network.wan.device="$1"
     fi
-    ip -4 route show default 2>/dev/null | sed 's/^/   🛣️  /'
+    uci -q delete network.wan6.ifname 2>/dev/null
+    uci -q set network.wan6.device="$1" 2>/dev/null
+    uci commit network
+    return 0
+  }
+  wait_route(){
+    N=0
+    while [ $N -lt 5 ]; do
+      sleep 3
+      ip -4 route show default 2>/dev/null | grep -q "dev $1" && return 0
+      N=$((N+1))
+    done
+    return 1
+  }
+  net_reload(){
+    ubus call network reload >/dev/null 2>&1 || /etc/init.d/network restart >/dev/null 2>&1
+    return 0
+  }
+
+  # المرشحين: أي منفذ LAN فيه كابل شغال — بنستبعد منفذ WAN نفسه والترانكات (منافذ عليها VLANات)
+  CAND=''
+  for SYSF in /sys/class/net/lan*; do
+    [ -e "$SYSF" ] || continue
+    P=$(basename "$SYSF")
+    case "$P" in *.*) continue ;; esac
+    [ "$P" = "$WANDEV" ] && continue
+    ls /sys/class/net/ 2>/dev/null | grep -q "^$P\." && continue
+    have_link "$P" && CAND="$CAND $P"
+  done
+
+  if [ -n "$CAND" ]; then
+    say "🔌 فيه كابل شغال في المنافذ:$CAND — هجرب كل واحد لحد ما ألاقي اللي بيجيب الإنترنت فعلاً"
+    say "   ⏳ الشبكة هتعيد تحميل نفسها أكتر من مرة (لو اتصال SSH قطع لحظة، استنى وأعد الاتصال)"
+    DONEP=''
+    for P in $CAND; do
+      say "   🔁 بجرب منفذ $P ..."
+      port_out_of_lan "$P"
+      set_wan_port "$P"
+      net_reload
+      if wait_route "$P"; then
+        DONEP=$P
+        break
+      fi
+      say "   ✖️  $P ماجابش إنترنت — برجّعه لمكانه في الشبكة الداخلية وبجرب اللي بعده"
+      port_back_to_lan
+      set_wan_port "$OLD_WANDEV"
+      net_reload
+    done
+    if [ -n "$DONEP" ]; then
+      echo "✅ الإنترنت اشتغل عن طريق منفذ $DONEP — ده بقى منفذ الإنترنت الرسمي (WAN)"
+      ip -4 route show default 2>/dev/null | sed 's/^/   🛣️  /'
+    else
+      echo "⚠️  جربنا كل المنافذ دي:$CAND ومفيش فيهم إنترنت — رجّعنا كل حاجة لمكانها الأصلي"
+      echo "   → اتأكد إن الكابل جاي من المودم/الراوتر الرئيسي وإن المودم شغال"
+      echo "   → لو الكابل في منفذ تاني، انقله لمنفذ WAN مباشرة وأعد سكربت التسطيب"
+    fi
   else
-    echo "⚠️  مفيش كابل إنترنت في أي منفذ (لا WAN ولا LAN1-4) — وصّل كابل المودم الأول"
+    if ls /sys/class/net/ 2>/dev/null | grep -q '^lan'; then
+      echo "⚠️  مفيش كابل إنترنت في أي منفذ (لا WAN ولا LAN1+) — وصّل كابل المودم الأول وأعد التسطيب"
+    else
+      echo "⚠️  الراوتر ده من النوع القديم (منافذه مش ظاهرة كمنافذ منفصلة) — الكشف الأوتوماتيك مش متاح هنا"
+      echo "   → حوّل كابل المودم لمنفذ WAN مباشرة وأعد تشغيل سكربت التسطيب"
+    fi
   fi
 fi
 
