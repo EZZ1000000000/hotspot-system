@@ -71,6 +71,51 @@ function ServerBadge({ serverKey, ok }: { serverKey: string; ok?: boolean }) {
   )
 }
 
+/* ════════════════════════════ أداة مدخل الإنترنت (LAN 1 ↔ WAN) ════════════════════════════ */
+function WanPortToolBox({ routerIp }: { routerIp: string }) {
+  const [origin, setOrigin] = useState('')
+  const [copiedKey, setCopiedKey] = useState('')
+  useEffect(() => { if (typeof window !== 'undefined') setOrigin(window.location.origin) }, [])
+  const base = origin
+  const convCmd = base ? `wget -qO /tmp/lan1wan.sh "${base}/api/router/wan-port?mode=lan1" && sh /tmp/lan1wan.sh` : '⏳ جاري التحضير...'
+  const restCmd = base ? `wget -qO /tmp/wanback.sh "${base}/api/router/wan-port?mode=restore" && sh /tmp/wanback.sh` : '⏳ جاري التحضير...'
+  const cp = async (k: string, t: string) => { await copyText(t); setCopiedKey(k); setTimeout(() => setCopiedKey(''), 2500) }
+  const codeStyle = { color: '#c4b5fd', background: '#020608', padding: '5px 8px', borderRadius: 5, display: 'block', direction: 'ltr' as const, textAlign: 'left' as const, wordBreak: 'break-all' as const, fontSize: 11, fontFamily: 'monospace', margin: 0 }
+  const linkStyle = { ...S.btn('#111B2D', '#c4b5fd'), border: '1px solid rgba(167,139,250,0.35)', textDecoration: 'none', fontSize: 11 } as React.CSSProperties
+  return (
+    <div style={{ background: 'rgba(167,139,250,0.05)', border: '1px solid rgba(167,139,250,0.3)', borderRadius: 10, padding: '12px 14px', marginTop: 12 }}>
+      <div style={{ fontSize: 12, fontWeight: 800, color: '#a78bfa', marginBottom: 4 }}>🔀 كابل النت في مدخل LAN 1؟ حوّله يبقى هو مدخل WAN</div>
+      <div style={{ fontSize: 11, color: '#6B8CAE', lineHeight: 1.9, marginBottom: 10 }}>
+        شغّل الأمر في SSH الراوتر (<code dir="ltr">root@{routerIp}</code>) — بيدعم كل أنواع الراوترات لوحده (الجديد والقديم والمنفذ الواحد)،
+        وبيحفظ نسخة أصلية من الإعدادات أول مرة بس. عايز ترجّع زي ما كان؟ شغّل أمر الاسترجاع.
+      </div>
+
+      <div style={{ fontSize: 11, fontWeight: 700, color: '#E2F0FB', marginBottom: 3 }}>1️⃣ التحويل — LAN 1 يبقى WAN (كابل النت في LAN 1):</div>
+      <code style={codeStyle}>{convCmd}</code>
+      <div style={{ display: 'flex', gap: 8, margin: '8px 0 12px', flexWrap: 'wrap' }}>
+        <button onClick={() => cp('c', convCmd)} style={{ ...S.btn(copiedKey === 'c' ? '#a78bfa' : '#111B2D', copiedKey === 'c' ? '#000' : '#c4b5fd'), border: '1px solid rgba(167,139,250,0.35)', fontSize: 11 }}>
+          {copiedKey === 'c' ? '✅ تم النسخ' : '📋 نسخ أمر التحويل'}
+        </button>
+        <a href="/api/router/wan-port?mode=lan1" download="lan1-to-wan.sh" style={linkStyle}>⬇️ تحميل سكربت التحويل</a>
+      </div>
+
+      <div style={{ fontSize: 11, fontWeight: 700, color: '#E2F0FB', marginBottom: 3 }}>2️⃣ الرجوع زي الأول — مدخل WAN الأساسي (زي ما كان مظبوط):</div>
+      <code style={codeStyle}>{restCmd}</code>
+      <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+        <button onClick={() => cp('r', restCmd)} style={{ ...S.btn(copiedKey === 'r' ? '#a78bfa' : '#111B2D', copiedKey === 'r' ? '#000' : '#c4b5fd'), border: '1px solid rgba(167,139,250,0.35)', fontSize: 11 }}>
+          {copiedKey === 'r' ? '✅ تم النسخ' : '📋 نسخ أمر الاسترجاع'}
+        </button>
+        <a href="/api/router/wan-port?mode=restore" download="wan-restore.sh" style={linkStyle}>⬇️ تحميل سكربت الاسترجاع</a>
+      </div>
+
+      <div style={{ fontSize: 10, color: '#354E6A', marginTop: 10, lineHeight: 1.8 }}>
+        💡 بعد التحويل استنى ~30 ثانية — ولو كنت داخل بكيبل على الراوتر الاتصال هيفصل (المنفذ بقى WAN) فادخل من الواي فاي أو مداخل LAN التانية.
+        عايز تحوّل منفذ تاني غير LAN 1؟ حمّل السكربت وشغّله كده: <code dir="ltr">PORT=lan2 sh /tmp/lan1wan.sh</code>
+      </div>
+    </div>
+  )
+}
+
 /* ════════════════════════════ كارت سكربت جهاز ════════════════════════════ */
 function DeviceScript({ device, serverKey, serverUrl, vpsIp }: {
   device: Device; serverKey: string; serverUrl: string; vpsIp: string
@@ -193,6 +238,9 @@ function DeviceScript({ device, serverKey, serverUrl, vpsIp }: {
       <pre style={{ background: '#020608', border: '1px solid #0C1420', borderRadius: 10, padding: 12, fontFamily: 'monospace', fontSize: 11, color: '#7dd3fc', lineHeight: 1.7, overflowX: 'auto', maxHeight: 350, overflowY: 'auto', direction: 'ltr', textAlign: 'left', margin: 0 }}>
         {loading ? '⏳ جاري تحميل السكريبت...' : script || '❌ مش قادر يجيب السكريبت — اتأكد إن السيرفر بتاع الجهاز شغال'}
       </pre>
+
+      {/* 🔀 أدوات مدخل الإنترنت — تحويل LAN 1 ↔ WAN */}
+      <WanPortToolBox routerIp={device.routerIp || '192.168.1.1'} />
     </div>
   )
 }
