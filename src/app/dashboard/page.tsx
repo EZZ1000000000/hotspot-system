@@ -494,7 +494,7 @@ function RouterSetupTab({ devices }: { devices: Device[] }) {
               </div>
               <div style={{background:'rgba(0,0,0,0.3)',borderRadius:10,padding:'10px 14px',marginBottom:12,fontSize:12,color:'#E2F0FB',lineHeight:2.2}}>
                 <strong style={{color:'#00D4FF'}}>طريقة التشغيل — 3 خطوات:</strong><br/>
-                1️⃣ من كمبيوتر متصل بنفس شبكة الراوتر: <code style={{background:'#020608',padding:'2px 8px',borderRadius:6,color:'#7dd3fc',direction:'ltr',display:'inline-block'}}>ssh root@{d.routerIp||'192.168.1.1'}</code><br/>
+                1️⃣ من كمبيوتر متصل بنفس شبكة الراوتر: <code style={{background:'#020608',padding:'2px 8px',borderRadius:6,color:'#7dd3fc',direction:'ltr',display:'inline-block'}}>ssh root@{d.routerIp||'192.168.1.6'}</code><br/>
                 2️⃣ الصق الأمر ده واضغط Enter:<br/>
                 <code style={{background:'#020608',padding:'4px 8px',borderRadius:6,color:'#7dd3fc',direction:'ltr',display:'block',marginTop:6,whiteSpace:'pre-wrap',wordBreak:'break-all'}}>wget -q -O /tmp/hotspot.sh "https://{typeof window!=='undefined'?window.location.host:''}/api/admin/config?deviceId={d.id}&type=script" && sh /tmp/hotspot.sh</code><br/>
                 3️⃣ استنى كل الاختبارات ✅ (لازم تشوف: 🎉 النتيجة: كل حاجة تمام) — وبعدها اعزل الواي فاي من الموبايل وارجع اتصل وادخل الكرت

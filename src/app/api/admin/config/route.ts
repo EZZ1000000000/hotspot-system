@@ -10,7 +10,7 @@ function buildConf(d: {
   clientTimeout: number; httpMaxConn: number
   routerIp?: string
 }, serverHost: string, uhttpdPort: string): string {
-  const routerIp = d.routerIp || '192.168.1.1'
+  const routerIp = d.routerIp || '192.168.1.6'
   return [
     `GatewayID           ${d.gatewayId}`,
     `GatewayAddress      ${routerIp}`,

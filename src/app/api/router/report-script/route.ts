@@ -7,11 +7,13 @@ export const dynamic = 'force-dynamic'
 // GET/POST /api/router/report-script
 //
 // الراوتر بيبلّغ عن نسخة السكربت المركّبة عليه:
-//   ?gw_id=GW-XXXX-XXXX&inst=3&wd=3
+//   ?gw_id=GW-XXXX-XXXX&inst=3&wd=3&lanip=192.168.1.6
 //
 // inst = نسخة سكربت التسطيب الموحد (من /etc/hotspot-script-version)
 //        0 أو ناقص = السكربت قديم أو مش متسجل (اللوحة تعرضه "محتاج تحديث")
 // wd   = نسخة الحارس الذاتي (اختياري)
+// lanip = العنوان الداخلي الحقيقي للراوتر (اختياري) — بيتحدث في Device.routerIp
+//         عشان اللوحة تعرض العنوان الفعلي دايماً (المعيار: 192.168.1.6)
 //
 // مكانه تخزينه: KeyValueStore (مفتاح: script-report:<gw_id>)
 // — عمداً من غير تعديل في الـ schema عشان يشتغل على كل
@@ -39,6 +41,17 @@ async function record(req: NextRequest) {
       req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
       req.headers.get('x-real-ip') ||
       null
+
+    // العنوان الداخلي الحقيقي للراوتر (lanip) — بيجي من السكربت نفسه (192.168.1.6 المعيار الموحد)
+    // بنحدّث routerIp في الجهاز مباشرة عشان اللوحة تعرض العنوان الحقيقي دايماً من غير أي تعديل يدوي
+    const lanip = (sp.get('lanip') || '').trim()
+    if (/^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)$/.test(lanip)) {
+      try {
+        await prisma.device.update({ where: { gatewayId: gwId }, data: { routerIp: lanip } })
+      } catch {
+        // الجهاز مش موجود أو خطأ مؤقت — مش مؤثر، التقرير الجاي هيعيد المحاولة
+      }
+    }
 
     const value = JSON.stringify({
       inst,

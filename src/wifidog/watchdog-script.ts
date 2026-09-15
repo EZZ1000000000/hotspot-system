@@ -24,11 +24,11 @@
 // (rate-limited كل 30 دقيقة) عشان ميضغطش الراوتر أو الفيد.
 // ═══════════════════════════════════════════════════════════
 
-export const WATCHDOG_VERSION = '5'
+export const WATCHDOG_VERSION = '6'
 
 export function buildWatchdogScript(): string {
   return `#!/bin/sh
-# 🛡️ الحارس الذاتي v5 (WFD_WD_VERSION=5) — شغال كل 5 دقايق من الكرون
+# 🛡️ الحارس الذاتي v6 (WFD_WD_VERSION=6) — شغال كل 5 دقايق من الكرون
 # يصلح لوحده: uhttpd / wifidog / قاعدة الاعتراض / باك-إند iptables المعطوب
 # + كشف العملية العنيدة: wifidog ماسك GatewayID قديم بعد تحويل الجهاز
 #   بين الكافيهات → قتل قسري وإعادة تشغيل (سبب "الجهاز غير موجود أو غير نشط")
@@ -37,7 +37,7 @@ export function buildWatchdogScript(): string {
 # + فرض اسم الشبكة من السيرفر كل 5 دقايق — شبكة أمان لو المزامنة وقعت
 # وبيحدّث نفسه من السيرفر كل ساعة — أي إصلاح جديد بيوصل لكل الراوترات لوحده
 # وبيبلّغ عن نسخة السكربت المركّبة كل ساعة — عشان اللوحة تعرف مين محدّث ومين لأ
-WFD_WD_VERSION="5"
+WFD_WD_VERSION="6"
 LOG=/tmp/hotspot_watchdog.log
 CONF=/etc/wifidog.conf
 
@@ -276,8 +276,9 @@ if [ $((NOW - TS)) -ge 3600 ] && [ -n "$SRV" ]; then
   #  inst = نسخة سكربت التسطيب (من /etc/hotspot-script-version) — 0 = قديم/غير معروف
   INST=$(cat /etc/hotspot-script-version 2>/dev/null | tr -d '[:space:]')
   case "$INST" in ''|*[!0-9]*) INST=0 ;; esac
-  uclient-fetch -q -T 15 -O /dev/null --no-check-certificate "https://\${SRV}/api/router/report-script?gw_id=\${GW}&inst=\${INST}&wd=\${WFD_WD_VERSION}" 2>/dev/null \
-    || wget -q -T 15 -O /dev/null --no-check-certificate "https://\${SRV}/api/router/report-script?gw_id=\${GW}&inst=\${INST}&wd=\${WFD_WD_VERSION}" 2>/dev/null
+  LANIP=$(ip -4 addr show br-lan 2>/dev/null | awk '/inet /{split($2,a,"/"); print a[1]; exit}')
+  uclient-fetch -q -T 15 -O /dev/null --no-check-certificate "https://\${SRV}/api/router/report-script?gw_id=\${GW}&inst=\${INST}&wd=\${WFD_WD_VERSION}&lanip=\${LANIP}" 2>/dev/null \
+    || wget -q -T 15 -O /dev/null --no-check-certificate "https://\${SRV}/api/router/report-script?gw_id=\${GW}&inst=\${INST}&wd=\${WFD_WD_VERSION}&lanip=\${LANIP}" 2>/dev/null
   F=/tmp/wd_new.sh
   uclient-fetch -q -T 20 -O "$F" --no-check-certificate "https://\${SRV}/api/router/watchdog" 2>/dev/null \\
     || wget -q -T 20 -O "$F" --no-check-certificate "https://\${SRV}/api/router/watchdog" 2>/dev/null

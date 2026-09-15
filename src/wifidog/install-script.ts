@@ -1466,8 +1466,8 @@ echo ""
 # (لو السكربت وقف قبل الخطوة دي — اللوحة هتفضل مصنفه "قديم" وده المطلوب)
 # ────────────────────────────────────────────────
 echo "${INSTALL_SCRIPT_VERSION}" > /etc/hotspot-script-version 2>/dev/null
-if wget -q -T 20 -O /dev/null "https://$SRV/api/router/report-script?gw_id=$GW_ID&inst=${INSTALL_SCRIPT_VERSION}" 2>/dev/null \
-   || uclient-fetch -q -T 20 -O /dev/null "https://$SRV/api/router/report-script?gw_id=$GW_ID&inst=${INSTALL_SCRIPT_VERSION}" 2>/dev/null; then
+if wget -q -T 20 -O /dev/null "https://$SRV/api/router/report-script?gw_id=$GW_ID&inst=${INSTALL_SCRIPT_VERSION}&lanip=\${LAN_IP_NOW}" 2>/dev/null \
+   || uclient-fetch -q -T 20 -O /dev/null "https://$SRV/api/router/report-script?gw_id=$GW_ID&inst=${INSTALL_SCRIPT_VERSION}&lanip=\${LAN_IP_NOW}" 2>/dev/null; then
   echo "✅ النسخة v${INSTALL_SCRIPT_VERSION} اتسجلت في اللوحة — هيظهر جوار اسم الجهاز: محدّث"
 else
   echo "⚠️  تسجيل النسخة في اللوحة مانجحش (الراوتر هيعيد المحاولة تلقائياً كل ساعة)"

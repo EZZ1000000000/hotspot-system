@@ -163,7 +163,7 @@ function DeviceScript({ device, serverKey, serverUrl, vpsIp }: {
             </span>
           </div>
           <div style={{ fontSize: 11, color: '#6B8CAE', marginTop: 3, display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-            <span>🌐 {device.routerIp || '192.168.1.1'}</span>
+            <span>🌐 {device.routerIp || '192.168.1.6'}</span>
             {device.location && <span>📍 {device.location}</span>}
             {device.wifiSSID
               ? <span style={{ background: 'rgba(0,230,118,0.1)', border: '1px solid rgba(0,230,118,0.25)', borderRadius: 5, padding: '1px 7px', color: '#00E676', fontSize: 10, fontWeight: 700 }}>
@@ -212,8 +212,8 @@ function DeviceScript({ device, serverKey, serverUrl, vpsIp }: {
         </code>
         <div style={{ fontWeight: 700, color: '#E2F0FB' }}>أو بالتحميل:</div>
         <div>1. حمّل السكريبت ⬇️</div>
-        <div>2. ارفعه: <code style={{ color: '#00D4FF', background: '#070B12', padding: '1px 5px', borderRadius: 3 }}>scp install-{device.gatewayId}.sh root@{device.routerIp || '192.168.1.1'}:/tmp/</code></div>
-        <div>3. اتصل: <code style={{ color: '#00D4FF', background: '#070B12', padding: '1px 5px', borderRadius: 3 }}>ssh root@{device.routerIp || '192.168.1.1'}</code></div>
+        <div>2. ارفعه: <code style={{ color: '#00D4FF', background: '#070B12', padding: '1px 5px', borderRadius: 3 }}>scp install-{device.gatewayId}.sh root@{device.routerIp || '192.168.1.6'}:/tmp/</code></div>
+        <div>3. اتصل: <code style={{ color: '#00D4FF', background: '#070B12', padding: '1px 5px', borderRadius: 3 }}>ssh root@{device.routerIp || '192.168.1.6'}</code></div>
         <div>4. شغّل: <code style={{ color: '#00D4FF', background: '#070B12', padding: '1px 5px', borderRadius: 3 }}>sh /tmp/install-{device.gatewayId}.sh</code></div>
         {device.wifiSSID && (
           <div style={{ color: '#00E676', marginTop: 4 }}>✅ السكريبت سيغير اسم الشبكة تلقائياً إلى: <strong>{device.wifiSSID}</strong> (2.4GHz + 5GHz)</div>
@@ -240,7 +240,7 @@ function DeviceScript({ device, serverKey, serverUrl, vpsIp }: {
       </pre>
 
       {/* 🔀 أدوات مدخل الإنترنت — تحويل LAN 1 ↔ WAN */}
-      <WanPortToolBox routerIp={device.routerIp || '192.168.1.1'} />
+      <WanPortToolBox routerIp={device.routerIp || '192.168.1.6'} />
     </div>
   )
 }

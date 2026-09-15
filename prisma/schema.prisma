@@ -76,7 +76,7 @@ model Device {
   clientTimeout     Int    @default(10)
   httpMaxConn       Int    @default(253)
 
-  routerIp      String  @default("192.168.1.1")
+  routerIp      String  @default("192.168.1.6")
   sshPort       Int     @default(22)
   sshUsername   String  @default("root")
   sshPassword   String?

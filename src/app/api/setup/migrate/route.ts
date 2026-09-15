@@ -113,7 +113,7 @@ export async function POST(req: NextRequest) {
         name:           device.name,
         location:       device.location || null,
         wifiSSID:       device.wifiSSID || null,
-        routerIp:       device.routerIp || '192.168.1.1',
+        routerIp:       device.routerIp || '192.168.1.6',
       }),
     })
     if (!devRes.ok || !(devRes.data as { device?: { id: string } })?.device?.id) {
