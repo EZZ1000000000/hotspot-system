@@ -66,7 +66,10 @@ export function buildInstallScript(o: InstallScriptOptions): string {
   const serverHost    = String(o.serverHost || '').trim()
   const deviceId      = String(o.deviceId || '').trim()
   const deviceName    = String(o.deviceName || o.gwId || '').trim()
-  const routerIp      = String(o.routerIp || '192.168.1.6').trim()
+  // ⚠️ المعيار الموحد بقرار المالك: العنوان الداخلي 192.168.1.6 لكل الأجهزة.
+  // بن تجاهل تمامًا أي قيمة قديمة محفوظة في قاعدة البيانات (زي 192.168.1.1) —
+  // القيم القديمة دي كانت بتتسرب لجسر صفحة الدخول وإعدادات wifidog وبتلخبط الناس.
+  const routerIp      = '192.168.1.6'
   const gwIf          = String(o.gatewayInterface || 'br-lan').trim()
   const extIf         = String(o.externalInterface || 'eth0.1').trim()
   const clientTimeout = parseInt(String(o.clientTimeout ?? 10), 10) || 10
@@ -101,6 +104,10 @@ export function buildInstallScript(o: InstallScriptOptions): string {
 #   5) يسطّب أوامر إدارة: hotspot-status / hotspot-ssid / hotspot-restart
 #      / hotspot-test (اختبار الاتصال في أي وقت)
 #   6) يقيس كل حاجة بنفسه في الآخر ويقولك النتيجة بوضوح
+#   7) بيشتغل قدامك مباشرة في الترمينال — كل خطوة ظاهرة لحظة تنفيذها
+#      (الحاجة الوحيدة اللي بتتنفذ منفصلة: إعادة تشغيل الشبكة الأخيرة
+#       لو العنوان الداخلي اتغير — لأن SSH بيقطع لحظتها — ومعاها
+#       تقرير كامل في /tmp/hotspot_install.log)
 # ================================================================
 
 GW_ID=${shellQuote(gwId)}
@@ -113,21 +120,29 @@ TUNNEL_SERVER=${shellQuote(tunnelServer)}
 say(){ echo ""; echo "==> $*"; }
 
 # ────────────────────────────────────────────────
-# 🛡️ تشغيل منفصل في الخلفية — حماية من انقطاع SSH
-#  خطوة [0.5/9] بتغير IP الشبكة الداخلية للراوتر، ولو السكربت كان شغال
-#  في مقدمة الـ SSH كان الاتصال هينقطع والتسطيب يضيع في النص.
-#  الحل: أول حاجة بنطلق نسخة منفصلة (nohup) بتكمل لوحدها مهما حصل.
-#  (المتغير HOTSPOT_INLINE يخلي السكربت يشتغل داخل غلاف بيشغله أصلاً منفصلاً)
+# 👀 وضع التشغيل المباشر — كل الخطوات بتظهر قدامك في الترمينال لحظة تنفيذها
+#  (طلب صاحب النظام: مفيش حاجة بتشتغل في الخلفية من غير ما تشوفها)
+#  الاستثناء الوحيد: إعادة تشغيل الشبكة في آخر خطوة لو العنوان الداخلي
+#  اتغير — لأن اتصال SSH بيقطع فعلًا لحظة التغيير (دي طبيعة الشبكة)،
+#  فبتنفذ منفصلة وبتسيب تقرير كامل في /tmp/hotspot_install.log
 # ────────────────────────────────────────────────
-if [ "$1" != "BG" ] && [ "$HOTSPOT_INLINE" != "1" ] && [ -f "$0" ] && [ -s "$0" ]; then
-  [ "$(id -u)" = "0" ] || { echo "❌ لازم تشغّل السكريبت بحساب root"; exit 1; }
-  nohup sh "$0" BG > /tmp/hotspot_install.log 2>&1 &
-  echo ""
-  echo "🚀 التسطيب اشتغل في الخلفية — آمن حتى لو اتصال SSH قطع"
-  echo "   لمتابعة التقدم اكتب:  tail -f /tmp/hotspot_install.log"
-  echo ""
-  exit 0
+[ "$(id -u)" = "0" ] || { echo "❌ لازم تشغّل السكريبت بحساب root"; exit 1; }
+# 🔒 قفل ضد التشغيل المتوازي — تشغيل السكربت مرتين مع بعض بيخليهم يلخبطوا بعض
+if ! mkdir /tmp/hotspot_inst.lock 2>/dev/null; then
+  echo "⏳ فيه نسخة من السكربت شغالة دلوقتي (أو انقطعت في النص) — استنى دقيقة وشغّله تاني"
+  echo "   لو متأكد إن مفيش حاجة شغالة:  rm -r /tmp/hotspot_inst.lock"
+  exit 1
 fi
+trap 'rmdir /tmp/hotspot_inst.lock 2>/dev/null' EXIT
+
+# ── لمحة عن حالة الراوتر قبل أي تغيير — كل حاجة ظاهرة قدامك ──
+WD_NOW_IP=$(ip -4 addr show br-lan 2>/dev/null | awk '/inet /{split($2,a,"/"); print a[1]; exit}')
+echo ""
+echo "🔍 العنوان الداخلي الشغال حالياً : \${WD_NOW_IP:-غير معروف}"
+[ -f /etc/hotspot-script-version ] && echo "🔍 آخر نسخة سكربت اتسطبت هنا : v$(cat /etc/hotspot-script-version 2>/dev/null)"
+WD_OLD_GW=$(grep '^GatewayAddress' /etc/wifidog.conf 2>/dev/null | head -n1 | awk '{print $2}')
+[ -n "$WD_OLD_GW" ] && echo "🔍 عنوان wifidog في الإعدادات الحالية : $WD_OLD_GW"
+echo ""
 
 # ────────────────────────────────────────────────
 # [1/9] تنضيف أي إصلاحات قديمة
@@ -296,15 +311,6 @@ fi
 #  التثبيت تلقائياً مع كل إقلاع/تجديد DHCP (عشان المشكلة ماترجعش حتى لو
 #  المصدر اتغير بعد التسطيب لنطاق 192.168.1.x)
 # ────────────────────────────────────────────────
-wd_wait_route(){
-  N=0
-  while [ $N -lt 10 ]; do
-    sleep 3
-    ip -4 route show default 2>/dev/null | grep -q default && return 0
-    N=$((N+1))
-  done
-  return 1
-}
 wd_gw_pin(){
   WD_RLINE=$(ip -4 route show default 2>/dev/null | head -n1)
   WD_RGW=$(echo "$WD_RLINE" | awk '{print $3; exit}')
@@ -336,40 +342,30 @@ GWHOT_EOF
 chmod +x /etc/hotplug.d/iface/30-hotspot-gwfix
 WD_LAN_IP=$(uci -q get network.lan.ipaddr 2>/dev/null)
 [ -z "$WD_LAN_IP" ] && WD_LAN_IP=$(ip -4 addr show br-lan 2>/dev/null | awk '/inet /{split($2,a,"/"); print a[1]; exit}')
+WD_LAN_RUN=$(ip -4 addr show br-lan 2>/dev/null | awk '/inet /{split($2,a,"/"); print a[1]; exit}')
 WD_TARGET='192.168.1.6'
-if [ "$WD_LAN_IP" = "$WD_TARGET" ]; then
-  echo "✅ الشبكة الداخلية على $WD_TARGET (المعيار الموحد)"
+WD_NET_RESTART=0
+if [ "$WD_LAN_IP" = "$WD_TARGET" ] && [ "$WD_LAN_RUN" = "$WD_TARGET" ]; then
+  echo "✅ الشبكة الداخلية على $WD_TARGET (المعيار الموحد) — ومطبقة فعلاً"
 else
-  say "🏠 توحيد الشبكة الداخلية: \${WD_LAN_IP:-غير معروف} ← $WD_TARGET"
+  say "🏠 توحيد الشبكة الداخلية على $WD_TARGET (المعيار الثابت بقرار المالك)"
+  echo "   الوضع الحالي: العنوان المسجل في الإعدادات [\${WD_LAN_IP:-غير معروف}] | العنوان الشغال فعلاً [\${WD_LAN_RUN:-غير معروف}]"
   echo "   السبب: العنوان الافتراضي 192.168.1.1 بيتعارض مع شبكة مودم المصدر (192.168.1.x غالباً)"
-  echo "   ⏳ لو اتصال SSH قطع دلوقتي — ده طبيعي — ادخل تاني على $WD_TARGET وسيب السكربت يكمل لوحده"
+  echo "   ℹ️  العنوان بيتسجل في إعدادات الراوتر دلوقتي — والتطبيق الفعلي (إعادة تشغيل الشبكة) في آخر خطوة من السكربت"
   uci set network.lan.ipaddr="$WD_TARGET"
   uci commit network
-  /etc/init.d/network restart >/dev/null 2>&1
-  sleep 12
-  if ! ip -4 route show default 2>/dev/null | grep -q default; then
-    ifup wan >/dev/null 2>&1
-    wd_wait_route >/dev/null 2>&1
-  fi
-  WD_LAN_IP=$(ip -4 addr show br-lan 2>/dev/null | awk '/inet /{split($2,a,"/"); print a[1]; exit}')
-  if [ "$WD_LAN_IP" = "$WD_TARGET" ]; then
-    echo "✅ الشبكة الداخلية بقت $WD_TARGET — لوحة الراوتر بقى الدخول عليها: http://$WD_TARGET"
-  else
-    echo "⚠️  تغيير الشبكة الداخلية ماتأكدش (الحالي: \${WD_LAN_IP:-?}) — بنكمل على أي حال"
-  fi
+  WD_NET_RESTART=1
 fi
-# ── تثبيت وقائي لطريق الـ Gateway (بيشتغل صح في كل الحالات) ──
-wd_gw_pin >/dev/null 2>&1
-# ── لو المصدر على نفس نطاق الداخلية (192.168.1.x غالباً): توضيح + اختبار المودم ──
+# ── لو المصدر على نفس نطاق المعيار الجديد (192.168.1.x غالباً): توضيح + اختبار المودم ──
 WD_WANDEV=$(uci -q get network.wan.device 2>/dev/null)
 [ -z "$WD_WANDEV" ] && WD_WANDEV=$(uci -q get network.wan.ifname 2>/dev/null | awk '{print $1}')
 [ -z "$WD_WANDEV" ] && WD_WANDEV=wan
-WD_LAN_SUB=$(echo "$WD_LAN_IP" | cut -d. -f1-3)
+WD_TGT_SUB=$(echo "$WD_TARGET" | cut -d. -f1-3)
 WD_WAN_IP=$(ip -4 addr show dev "$WD_WANDEV" 2>/dev/null | awk '/inet /{split($2,a,"/"); print a[1]; exit}')
 WD_WAN_SUB=$(echo "$WD_WAN_IP" | cut -d. -f1-3)
-if [ -n "$WD_WAN_SUB" ] && [ -n "$WD_LAN_SUB" ] && [ "$WD_LAN_SUB" = "$WD_WAN_SUB" ]; then
-  echo "ℹ️  مودم المصدر ($WD_WAN_IP) على نفس نطاق الشبكة الداخلية ($WD_LAN_IP) — الوضع مدعوم بالكامل:"
-  echo "   طريق الـ Gateway متثبت على WAN براوت /32 → النت يمشي عادي والمشكلة مش هتترجع"
+if [ -n "$WD_WAN_SUB" ] && [ "$WD_WAN_SUB" = "$WD_TGT_SUB" ]; then
+  echo "ℹ️  مودم المصدر ($WD_WAN_IP) على نفس نطاق الشبكة الداخلية ($WD_TARGET) — الوضع مدعوم بالكامل:"
+  echo "   طريق الـ Gateway هيتثبت على WAN براوت /32 → النت يمشي عادي والمشكلة مش هتترجع"
   WD_RGW=$(ip -4 route show default 2>/dev/null | head -n1 | awk '{print $3; exit}')
   if [ -n "$WD_RGW" ] && ping -c 2 -W 2 "$WD_RGW" >/dev/null 2>&1; then
     echo "   ✅ اتصال بالمودم سليم (ping $WD_RGW)"
@@ -377,6 +373,8 @@ if [ -n "$WD_WAN_SUB" ] && [ -n "$WD_LAN_SUB" ] && [ "$WD_LAN_SUB" = "$WD_WAN_SU
     echo "   ⚠️  مفيش رد من المودم دلوقتي ($WD_RGW) — كمّل التسطيب ولو فشل: hotspot-test"
   fi
 fi
+# ── تثبيت وقائي لطريق الـ Gateway على الوضع الحالي (التثبيت النهائي في المسرح الأخير) ──
+wd_gw_pin >/dev/null 2>&1
 
 /etc/init.d/hotspot-relay stop    >/dev/null 2>&1
 /etc/init.d/hotspot-relay disable >/dev/null 2>&1
@@ -791,18 +789,28 @@ APPLY_SSID(){
   [ -z "$S" ] && return 0
   uci -q show wireless >/dev/null 2>&1 || return 0
   i=0
+  WD_SSID_CHG=0
   while uci -q show wireless.@wifi-iface[$i] >/dev/null 2>&1; do
     MODE=$(uci -q get wireless.@wifi-iface[$i].mode 2>/dev/null)
     if [ "$MODE" = "ap" ] || [ -z "$MODE" ]; then
-      uci set wireless.@wifi-iface[$i].ssid="$S"
-      echo "   ✔️  واجهة [$i] (mode=\${MODE:-ap}) → $S"
+      CUR=$(uci -q get wireless.@wifi-iface[$i].ssid 2>/dev/null)
+      if [ "$CUR" = "$S" ]; then
+        echo "   ✔️  واجهة [$i] بالفعل على الاسم الصح: $S"
+      else
+        uci set wireless.@wifi-iface[$i].ssid="$S"
+        echo "   ✔️  واجهة [$i] (mode=\${MODE:-ap}): '\${CUR:-فاضي}' ← $S"
+        WD_SSID_CHG=1
+      fi
     else
       echo "   ⏭️  واجهة [$i] mode=$MODE — اتسابت (واجهة uplink)"
     fi
     i=$((i+1))
   done
   uci commit wireless
-  wifi reload >/dev/null 2>&1
+  if [ "$WD_SSID_CHG" = "1" ]; then
+    # إعادة تحميل الواي فاي بس لو الاسم اتغير فعلاً — عشان الاتصال ماتفصلش على الفاضي
+    wifi reload >/dev/null 2>&1
+  fi
 }
 
 say "[5/9] هوية الهوت سبوت — اسم الشبكة وصفحة الدخول (من السيرفر مباشرة)..."
@@ -1340,13 +1348,46 @@ else
 fi` : `say "[8/9] SSH Tunnel — مش متظبط (تخطي)"`}
 
 # ────────────────────────────────────────────────
-# [9/9] تشغيل الخدمات + الاختبار النهائي
+# [9/9] المرحلة الأخيرة — تشغيل الخدمات + الاختبار النهائي
+#  كل إعدادات الراوتر اتكتبت وظهرت قدامك في الترمينال. الخطوات اللي تحت كلها
+#  في "المسرح الأخير": لو العنوان الداخلي اتغير → بتتنفذ منفصلة بعد إعادة
+#  تشغيل الشبكة (لأن اتصال SSH بيقطع لحظتها — دي طبيعة الشبكة) وبتكتب تقرير
+#  كامل في /tmp/hotspot_install.log — ولو العنوان ثابت → بتتنفذ قدامك
+#  مباشرة من غير أي انقطاع خالص.
 # ────────────────────────────────────────────────
-say "[9/9] تشغيل الخدمات + الاختبار النهائي..."
+cat > /tmp/hotspot_final.sh << 'FIN_EOF'
+#!/bin/sh
+# 🏁 المسرح الأخير — تشغيل الخدمات + الاختبار النهائي + تقرير النتيجة
+SRV="${serverHost}"
+GW_ID="${gwId}"
+say(){ echo ""; echo "==> \$*"; }
+
+if [ "\$1" = "R" ]; then
+  say "[أخير] إعادة تشغيل الشبكة بالعنوان الجديد 192.168.1.6 ..."
+  /etc/init.d/network restart >/dev/null 2>&1
+  sleep 12
+  NFW=0
+  while [ \$NFW -lt 10 ]; do
+    ip -4 route show default 2>/dev/null | grep -q default && break
+    ifup wan >/dev/null 2>&1
+    sleep 3
+    NFW=\$((NFW+1))
+  done
+fi
+
+# ── تثبيت طريق الـ Gateway على WAN براوت /32 — حماية تعارض النطاق مع المودم ──
+RLINE=\$(ip -4 route show default 2>/dev/null | head -n1)
+RGW=\$(echo "\$RLINE" | awk '{print \$3; exit}')
+RDEV=\$(echo "\$RLINE" | awk '{print \$5; exit}')
+if [ -n "\$RGW" ] && [ -n "\$RDEV" ]; then
+  ip route replace "\$RGW/32" dev "\$RDEV" >/dev/null 2>&1 || { ip route del "\$RGW/32" >/dev/null 2>&1; ip route add "\$RGW/32" dev "\$RDEV" >/dev/null 2>&1; }
+  echo "🛡️  طريق الـ Gateway متثبت على WAN (\$RGW/32 عبر \$RDEV) — حماية التعارض شغالة"
+fi
+
+wifi reload >/dev/null 2>&1
+
+say "[أخير] تشغيل wifidog بالإعدادات الجديدة..."
 /etc/init.d/wifidog enable >/dev/null 2>&1
-# ⚠️ إعادة تشغيل بقوة: init.d لوحده ساعات بيفشل يقتل العملية القديمة
-# فتفضل عايشة بالإعدادات القديمة في الذاكرة (ده اللي كان بيخلي الجهاز
-# يفضل مربوط بالكافيه القديم بعد التحويل) — بنقتلها عنف ونشغل جديدة
 wd_force_restart(){
   /etc/init.d/wifidog stop >/dev/null 2>&1
   killall -9 wifidog >/dev/null 2>&1
@@ -1374,20 +1415,18 @@ fi
 
 # ── التأكد إن الهوية الفعلية الشغالة = هوية الجهاز دي بالظبط ──
 # بنسأل wifidog نفسه: صفّرحني بالـ 302 اللي بيحوّل بيه الموبايلات
-# ولو طلع بيوحّل بهوية كافيه قديم → قتل نهائي وإعادة تشغيل تالتة
-wd_effective_gw(){
-  printf "GET /login/ HTTP/1.0\\r\\nHost: 127.0.0.1\\r\\n\\r\\n" | nc -w 5 127.0.0.1 2060 2>/dev/null \
-    | sed -n 's/.*[?&]gw_id=\\([^&]*\\).*/\\1/p' | head -n1 | tr -d '\\r'
-}
 if command -v nc >/dev/null 2>&1; then
-  WD_GW=\$(wd_effective_gw)
+  WD_EFF(){
+    printf "GET /login/ HTTP/1.0\\r\\nHost: 127.0.0.1\\r\\n\\r\\n" | nc -w 5 127.0.0.1 2060 2>/dev/null | sed -n 's/.*[?&]gw_id=\\([^&]*\\).*/\\1/p' | head -n1 | tr -d '\\r'
+  }
+  WD_GW=\$(WD_EFF)
   if [ -n "\$WD_GW" ] && [ "\$WD_GW" != "\$GW_ID" ]; then
     echo "⚠️  wifidog الشغال ماسك هوية قديمة (\$WD_GW بدل \$GW_ID) — عملية عنيدة، بقتلها نهائياً..."
     killall -9 wifidog >/dev/null 2>&1
     sleep 2
     killall -9 wifidog >/dev/null 2>&1
     wd_force_restart
-    WD_GW2=\$(wd_effective_gw)
+    WD_GW2=\$(WD_EFF)
     if [ -n "\$WD_GW2" ] && [ "\$WD_GW2" != "\$GW_ID" ]; then
       echo "❌ الهوية القديمة لسه متمسكتش — اعمل Reboot للراوتر (إعادة تشغيل كاملة) وكل حاجة هتظبط"
     else
@@ -1400,13 +1439,12 @@ fi
 
 # ── التأكد إن قواعد الاعتراض اتسجلت في الجدار الناري فعلاً ──
 # دي القاعدة اللي بتخلي أي موبايل يفتح أي موقع يتبعت لصفحة الدخول تلقائياً
-# (لو الجدار الناري اتعاد تشغيله بعد wifidog — القاعدة بتضيع وصفحة الدخول مش بتظهر)
 if command -v iptables >/dev/null 2>&1; then
-  NF=0
-  while [ $NF -lt 8 ]; do
+  NFR=0
+  while [ \$NFR -lt 8 ]; do
     iptables -t nat -S 2>/dev/null | grep -q 2060 && break
     sleep 2
-    NF=$((NF+1))
+    NFR=\$((NFR+1))
   done
   if iptables -t nat -S 2>/dev/null | grep -q 2060; then
     echo "✅ قواعد الاعتراض اتسجلت — الموبايلات هتتبعت لصفحة الدخول تلقائياً"
@@ -1416,38 +1454,34 @@ if command -v iptables >/dev/null 2>&1; then
     sleep 2
     wd_force_restart
     sleep 5
-    iptables -t nat -S 2>/dev/null | grep -q 2060 \
-      && echo "✅ اتصلحت — الاعتراض شغال دلوقتي" \
-      || { echo "❌ القاعدة لسه ناقصة — شغّل: hotspot-doctor وابعت سكرين بالنتيجة"; }
+    iptables -t nat -S 2>/dev/null | grep -q 2060 && echo "✅ اتصلحت — الاعتراض شغال دلوقتي" || { echo "❌ القاعدة لسه ناقصة — شغّل: hotspot-doctor وابعت سكرين بالنتيجة"; }
   fi
 fi
 
 hotspot-test
 
-# تحميل نسخة صفحة الدخول في كاش الراوتر دلوقتي — أول موبايل هيلاقيها فوراً
 say "[تمهيد] تحضير صفحة الدخول محلياً (كاش فوري)..."
-UPORT=$(uci -q get uhttpd.main.listen_http 2>/dev/null | tr ' ' '\\n' | grep -v '^\\[' | head -n1 | sed 's/.*://')
-[ -z "$UPORT" ] && UPORT=80
-if wget -q -T 60 -O /dev/null "http://127.0.0.1:$UPORT/cgi-bin/go?ep=/portal/" 2>/dev/null; then
+UPORT=\$(uci -q get uhttpd.main.listen_http 2>/dev/null | tr ' ' '\\n' | grep -v '^\\[' | head -n1 | sed 's/.*://')
+[ -z "\$UPORT" ] && UPORT=80
+if wget -q -T 60 -O /dev/null "http://127.0.0.1:\$UPORT/cgi-bin/go?ep=/portal/" 2>/dev/null; then
   echo "✅ صفحة الدخول متحمّلة محلياً — هتظهر للموبايل فوراً"
 else
   echo "⚠️  الصفحة هتتحمّل تلقائياً أول ما موبايل يفتح البورتال (أو بعد 5 دقايق بالكرون)"
 fi
 
-# تسجيل فوري في السيرفر — الحالة أونلاين في لوحة التحكم خلال ثواني (مش مستنيين 5 دقايق)
-if wget -q -T 20 -O /dev/null "http://127.0.0.1:$UPORT/cgi-bin/go?ep=/ping/?gw_id=$GW_ID&sys_uptime=1&sys_memfree=1&sys_load=1&wifidog_uptime=1" 2>/dev/null; then
+if wget -q -T 20 -O /dev/null "http://127.0.0.1:\$UPORT/cgi-bin/go?ep=/ping/?gw_id=\$GW_ID&sys_uptime=1&sys_memfree=1&sys_load=1&wifidog_uptime=1" 2>/dev/null; then
   echo "✅ الجهاز اتسجل في السيرفر — هتلاقي حالته أونلاين في لوحة التحكم حالاً"
 else
   echo "⚠️  التسجيل الفوري مانجحش — أول نبضة تلقائية من wifidog هتسجله خلال 5 دقايق"
 fi
 
-LAN_IP_NOW=$(ip -4 addr show br-lan 2>/dev/null | awk '/inet /{split($2,a,"/"); print a[1]; exit}')
+LAN_IP_NOW=\$(ip -4 addr show br-lan 2>/dev/null | awk '/inet /{split(\$2,a,"/"); print a[1]; exit}')
 echo ""
 echo "════════════════════════════════════════════════"
 echo " ✅ السكربت الشامل خلص!"
 echo ""
-echo " GatewayID : $GW_ID"
-echo " السيرفر   : $SRV"
+echo " GatewayID : \$GW_ID"
+echo " السيرفر   : \$SRV"
 echo " النسخة    : v${INSTALL_SCRIPT_VERSION}"
 echo " الشبكة الداخلية : \${LAN_IP_NOW:-192.168.1.6} — لوحة الراوتر: http://\${LAN_IP_NOW:-192.168.1.6}"
 echo ""
@@ -1460,17 +1494,39 @@ echo " 🧪 لو حابب تتأكد في أي وقت: hotspot-test"
 echo "════════════════════════════════════════════════"
 echo ""
 
-# ────────────────────────────────────────────────
-# تسجيل نسخة السكربت — على الراوتر وفي السيرفر
-# ده اللي بيخلي اللوحة تعرف إن الراوتر ده محدّث
-# (لو السكربت وقف قبل الخطوة دي — اللوحة هتفضل مصنفه "قديم" وده المطلوب)
-# ────────────────────────────────────────────────
+# ── تسجيل نسخة السكربت + العنوان الداخلي الحقيقي — على الراوتر وفي السيرفر ──
 echo "${INSTALL_SCRIPT_VERSION}" > /etc/hotspot-script-version 2>/dev/null
-if wget -q -T 20 -O /dev/null "https://$SRV/api/router/report-script?gw_id=$GW_ID&inst=${INSTALL_SCRIPT_VERSION}&lanip=\${LAN_IP_NOW}" 2>/dev/null \
-   || uclient-fetch -q -T 20 -O /dev/null "https://$SRV/api/router/report-script?gw_id=$GW_ID&inst=${INSTALL_SCRIPT_VERSION}&lanip=\${LAN_IP_NOW}" 2>/dev/null; then
+if wget -q -T 20 -O /dev/null "https://\$SRV/api/router/report-script?gw_id=\$GW_ID&inst=${INSTALL_SCRIPT_VERSION}&lanip=\${LAN_IP_NOW:-192.168.1.6}" 2>/dev/null || uclient-fetch -q -T 20 -O /dev/null "https://\$SRV/api/router/report-script?gw_id=\$GW_ID&inst=${INSTALL_SCRIPT_VERSION}&lanip=\${LAN_IP_NOW:-192.168.1.6}" 2>/dev/null; then
   echo "✅ النسخة v${INSTALL_SCRIPT_VERSION} اتسجلت في اللوحة — هيظهر جوار اسم الجهاز: محدّث"
 else
   echo "⚠️  تسجيل النسخة في اللوحة مانجحش (الراوتر هيعيد المحاولة تلقائياً كل ساعة)"
+fi
+
+# فتح القفل — السكربت ينفع يتشغل تاني
+rmdir /tmp/hotspot_inst.lock 2>/dev/null
+FIN_EOF
+
+if [ "\$WD_NET_RESTART" = "1" ]; then
+  echo ""
+  echo "════════════════════════════════════════════════"
+  echo " ✅ كل الإعدادات اتكتبت — وكل الخطوات ظهرت قدامك فوق"
+  echo ""
+  echo " 🔁 فاضل خطوة واحدة: تطبيق العنوان الجديد \$WD_TARGET"
+  echo "    إعادة تشغيل الشبكة بتتعمل منفصلة — لأن اتصال SSH"
+  echo "    بيقطع فعلًا لحظة تغيير العنوان، وده طبيعي ومقصود مش عطل"
+  echo ""
+  echo " 📴 اتصال SSH هينقط دلوقتي — ده متوقع"
+  echo " ⏳ استنى 30 ثانية وبعدين ادخل تاني على:  ssh root@\$WD_TARGET"
+  echo " 📄 بعد الدخول شوف تقرير النتيجة الكامل:  cat /tmp/hotspot_install.log"
+  echo " 🧪 واختبر في أي وقت:  hotspot-test"
+  echo "════════════════════════════════════════════════"
+  echo ""
+  trap 'true' EXIT
+  nohup sh /tmp/hotspot_final.sh R >> /tmp/hotspot_install.log 2>&1 &
+  exit 0
+else
+  say "[9/9] التشغيل النهائي + الاختبار (الشبكة ثابتة — كل حاجة قدامك مباشرة)"
+  sh /tmp/hotspot_final.sh N
 fi
 `
 }
