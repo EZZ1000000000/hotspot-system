@@ -639,7 +639,7 @@ export default function DashboardPage() {
   }
 
   const [gen,setGen]=useState({count:10,packageType:'BOTH',dataLimitMB:1024,timeLimitMin:60,speedLimitMbps:'',deviceId:'',maxUsageCount:1,codeType:'mix',voucherType:'STANDARD',codeLength:16,isUnlimited:false})
-  const [devForm,setDevForm]=useState({name:'',location:'',routerIp:'192.168.1.1',sshPassword:'',wifiSSID:''})
+  const [devForm,setDevForm]=useState({name:'',location:'',routerIp:'192.168.1.6',sshPassword:'',wifiSSID:''})
   const [showAddDev,setShowAddDev]=useState(false)
   // إيقاف/تشغيل الجهاز — تأكيد بمودال داخلي (مش window.confirm لأن المتصفح ممكن يحجبه ويزر يبقى ميت)
   const [devConfirm,setDevConfirm]=useState<null|{id:string;name:string;activate:boolean}>(null)
@@ -714,7 +714,7 @@ export default function DashboardPage() {
     if(!admin) return
     const res=await fetch('/api/admin/devices',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...devForm,hotspotAdminId:admin.id})})
     const data=await res.json()
-    if(data.success){setMsg('✅ تم إضافة الجهاز');setShowAddDev(false);loadAll(admin);setDevForm({name:'',location:'',routerIp:'192.168.1.1',sshPassword:'',wifiSSID:''})}
+    if(data.success){setMsg('✅ تم إضافة الجهاز');setShowAddDev(false);loadAll(admin);setDevForm({name:'',location:'',routerIp:'192.168.1.6',sshPassword:'',wifiSSID:''})}
     else setMsg('❌ '+(data.error||'خطأ'))
   }
 
@@ -818,7 +818,7 @@ export default function DashboardPage() {
                   <div style={{marginTop:18,paddingTop:18,borderTop:'1px solid #1C2A40'}}>
                     <div style={{padding:'10px 14px',background:'rgba(0,212,255,0.06)',border:'1px solid rgba(0,212,255,0.2)',borderRadius:10,marginBottom:12}}><div style={{fontSize:12,color:'#00D4FF',fontWeight:700}}>✅ GatewayID + TunnelPort بيتولدوا تلقائياً</div></div>
                     <div className="form-grid-2" style={{marginBottom:14}}>
-                      {[{k:'name',l:'اسم الكافيه (اسم الجهاز)',p:'كافيه النيل'},{k:'wifiSSID',l:'📶 اسم الشبكة (الواي فاي + صفحة الهوت سبوت)',p:'سيبكه فاضي = نفس اسم الكافيه'},{k:'location',l:'الموقع',p:'شارع التحرير'},{k:'routerIp',l:'IP الراوتر',p:'192.168.1.1'},{k:'sshPassword',l:'SSH Password',p:'اختياري',t:'password'}].map(f=>(<div key={f.k}><label style={S.label}>{f.l}</label><input style={S.input} type={(f as any).t||'text'} placeholder={f.p} value={(devForm as any)[f.k]} onChange={e=>setDevForm({...devForm,[f.k]:e.target.value})}/></div>))}
+                      {[{k:'name',l:'اسم الكافيه (اسم الجهاز)',p:'كافيه النيل'},{k:'wifiSSID',l:'📶 اسم الشبكة (الواي فاي + صفحة الهوت سبوت)',p:'سيبكه فاضي = نفس اسم الكافيه'},{k:'location',l:'الموقع',p:'شارع التحرير'},{k:'routerIp',l:'IP الراوتر',p:'192.168.1.6'},{k:'sshPassword',l:'SSH Password',p:'اختياري',t:'password'}].map(f=>(<div key={f.k}><label style={S.label}>{f.l}</label><input style={S.input} type={(f as any).t||'text'} placeholder={f.p} value={(devForm as any)[f.k]} onChange={e=>setDevForm({...devForm,[f.k]:e.target.value})}/></div>))}
                     </div>
                     <div style={{display:'flex',gap:10}}><button style={S.btn()} onClick={addDevice}>💾 حفظ</button><button style={{...S.btn('#1C2A40','#6B8CAE')}} onClick={()=>setShowAddDev(false)}>إلغاء</button></div>
                   </div>

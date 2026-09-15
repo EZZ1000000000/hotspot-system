@@ -105,7 +105,7 @@ export async function POST(req: NextRequest) {
         gatewayId,
         tunnelPort,
         location:          location          || null,
-        routerIp:          routerIp          || '192.168.1.1',
+        routerIp:          routerIp          || '192.168.1.6',
         sshPassword:       sshPassword       || null,
         wifiSSID:          fixedSSID,
         gatewayInterface:  gatewayInterface  || 'br-lan',

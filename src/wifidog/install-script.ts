@@ -8,6 +8,15 @@
 //   [0/9] كشف مكان كابل الإنترنت تلقائياً — لو متركب في منفذ LAN (زي LAN1)
 //         بدل WAN بيظبطه فوراً (بيمنع: الموبايل يفتح نت على طول + صفحة الدخول ماتظهر
 //         + الموبايل بيفضل عالق على "جاري الاتصال" — كل دي أعراض الكابل الغلط)
+//   [0.5/9] توحيد الشبكة الداخلية على 192.168.1.6 (المعيار الثابت بقرار المالك) —
+//         بدل 192.168.1.1 اللي كان بيتعارض مع شبكة مودم المصدر (كل المودمات في مصر
+//         تقريباً على 192.168.1.x — التعارض ده كان بيقطع النت على الراوتر نفسه حتى لو
+//         المصدر شغال ممتاز)
+//   + حماية التعارض: بما إن 192.168.1.6 على نفس نطاق أغلب المودمات، السكربت بيثبت
+//         طريق الـ Gateway على واجهة WAN براوت /32 (أدق من أي راوت نطاق) + حارس
+//         hotplug بيعيد التثبيت تلقائياً مع كل إقلاع/تجديد DHCP → المرور للمودم سليم
+//         حتى لو النطاقين متطابقين، والمشكلة ماترجعش حتى لو المصدر اتغير بعد التسطيب
+//   + السكربت بينطلق نفسه منفصلاً في الخلفية — آمن حتى لو SSH قطع أثناء تغيير الشبكة
 //   [1/9] تنضيف أي إصلاحات قديمة (socat relay / /etc/hosts / dnsmasq)
 //         — دي كانت بتتعارض مع الجسر وبتكسر التفعيل
 //   [2/9] تسطيب wifidog + iptables (جدار الاعتراض) + دعم HTTPS (libustream + ca-bundle) + uhttpd
@@ -57,7 +66,7 @@ export function buildInstallScript(o: InstallScriptOptions): string {
   const serverHost    = String(o.serverHost || '').trim()
   const deviceId      = String(o.deviceId || '').trim()
   const deviceName    = String(o.deviceName || o.gwId || '').trim()
-  const routerIp      = String(o.routerIp || '192.168.1.1').trim()
+  const routerIp      = String(o.routerIp || '192.168.1.6').trim()
   const gwIf          = String(o.gatewayInterface || 'br-lan').trim()
   const extIf         = String(o.externalInterface || 'eth0.1').trim()
   const clientTimeout = parseInt(String(o.clientTimeout ?? 10), 10) || 10
@@ -102,6 +111,23 @@ TUNNEL_PORT=${shellQuote(tunnelPort)}
 TUNNEL_SERVER=${shellQuote(tunnelServer)}
 
 say(){ echo ""; echo "==> $*"; }
+
+# ────────────────────────────────────────────────
+# 🛡️ تشغيل منفصل في الخلفية — حماية من انقطاع SSH
+#  خطوة [0.5/9] بتغير IP الشبكة الداخلية للراوتر، ولو السكربت كان شغال
+#  في مقدمة الـ SSH كان الاتصال هينقطع والتسطيب يضيع في النص.
+#  الحل: أول حاجة بنطلق نسخة منفصلة (nohup) بتكمل لوحدها مهما حصل.
+#  (المتغير HOTSPOT_INLINE يخلي السكربت يشتغل داخل غلاف بيشغله أصلاً منفصلاً)
+# ────────────────────────────────────────────────
+if [ "$1" != "BG" ] && [ "$HOTSPOT_INLINE" != "1" ] && [ -f "$0" ] && [ -s "$0" ]; then
+  [ "$(id -u)" = "0" ] || { echo "❌ لازم تشغّل السكريبت بحساب root"; exit 1; }
+  nohup sh "$0" BG > /tmp/hotspot_install.log 2>&1 &
+  echo ""
+  echo "🚀 التسطيب اشتغل في الخلفية — آمن حتى لو اتصال SSH قطع"
+  echo "   لمتابعة التقدم اكتب:  tail -f /tmp/hotspot_install.log"
+  echo ""
+  exit 0
+fi
 
 # ────────────────────────────────────────────────
 # [1/9] تنضيف أي إصلاحات قديمة
@@ -256,6 +282,99 @@ else
       echo "⚠️  الراوتر ده من النوع القديم (منافذه مش ظاهرة كمنافذ منفصلة) — الكشف الأوتوماتيك مش متاح هنا"
       echo "   → حوّل كابل المودم لمنفذ WAN مباشرة وأعد تشغيل سكربت التسطيب"
     fi
+  fi
+fi
+
+# ────────────────────────────────────────────────
+# [0.5/9] توحيد الشبكة الداخلية على 192.168.1.6 — معيار ثابت بقرار المالك
+#  العنوان الافتراضي القديم 192.168.1.1 كان بيتعارض مع مودم المصدر
+#  (أغلب مودمات مصر شغالة 192.168.1.x) → الراوتر بيتقطع عن النت حتى لو المصدر ممتاز
+#  من دلوقتي: كل جهاز بيتسطب → شبكته الداخلية 192.168.1.6
+#  وبما إن العنوان ده على نفس نطاق أغلب المودمات، بنضيف حماية شبكية:
+#  تثبيت طريق الـ Gateway على WAN براوت /32 (أدق من أي راوت نطاق) — فالمرور
+#  للمودم بيعدي من WAN صح حتى لو النطاقين متطابقين + حارس hotplug بيعيد
+#  التثبيت تلقائياً مع كل إقلاع/تجديد DHCP (عشان المشكلة ماترجعش حتى لو
+#  المصدر اتغير بعد التسطيب لنطاق 192.168.1.x)
+# ────────────────────────────────────────────────
+wd_wait_route(){
+  N=0
+  while [ $N -lt 10 ]; do
+    sleep 3
+    ip -4 route show default 2>/dev/null | grep -q default && return 0
+    N=$((N+1))
+  done
+  return 1
+}
+wd_gw_pin(){
+  WD_RLINE=$(ip -4 route show default 2>/dev/null | head -n1)
+  WD_RGW=$(echo "$WD_RLINE" | awk '{print $3; exit}')
+  WD_RDEV=$(echo "$WD_RLINE" | awk '{print $5; exit}')
+  [ -z "$WD_RDEV" ] && WD_RDEV=$(uci -q get network.wan.device 2>/dev/null)
+  [ -z "$WD_RDEV" ] && WD_RDEV=$(uci -q get network.wan.ifname 2>/dev/null | awk '{print $1}')
+  if [ -n "$WD_RGW" ] && [ -n "$WD_RDEV" ]; then
+    ip route replace "$WD_RGW/32" dev "$WD_RDEV" 2>/dev/null && return 0
+    ip route del "$WD_RGW/32" 2>/dev/null
+    ip route add "$WD_RGW/32" dev "$WD_RDEV" 2>/dev/null && return 0
+  fi
+  return 1
+}
+# حارس hotplug: بيعيد تثبيت طريق الـ Gateway مع كل ifup/ifupdate لواجهة wan
+# (إقلاع - تجديد DHCP - تغيير مصدر النت) — الحماية دي دائمة بعد التسطيب
+mkdir -p /etc/hotplug.d/iface
+cat > /etc/hotplug.d/iface/30-hotspot-gwfix << 'GWHOT_EOF'
+#!/bin/sh
+# [hotspot] تثبيت طريق الـ Gateway على WAN — حماية من تعارض نطاق wan/lan
+# بيتنفذ تلقائياً مع كل ifup/ifupdate لواجهة wan
+[ "$INTERFACE" = "wan" ] || exit 0
+[ "$ACTION" = "ifup" ] || [ "$ACTION" = "ifupdate" ] || exit 0
+GWH_DEV="$DEVICE"
+[ -z "$GWH_DEV" ] && GWH_DEV=$(ip -4 route show default 2>/dev/null | awk '{print $5; exit}')
+GWH_GW=$(ip -4 route show default 2>/dev/null | awk '{print $3; exit}')
+[ -n "$GWH_DEV" ] && [ -n "$GWH_GW" ] && ip route replace "$GWH_GW/32" dev "$GWH_DEV" 2>/dev/null
+exit 0
+GWHOT_EOF
+chmod +x /etc/hotplug.d/iface/30-hotspot-gwfix
+WD_LAN_IP=$(uci -q get network.lan.ipaddr 2>/dev/null)
+[ -z "$WD_LAN_IP" ] && WD_LAN_IP=$(ip -4 addr show br-lan 2>/dev/null | awk '/inet /{split($2,a,"/"); print a[1]; exit}')
+WD_TARGET='192.168.1.6'
+if [ "$WD_LAN_IP" = "$WD_TARGET" ]; then
+  echo "✅ الشبكة الداخلية على $WD_TARGET (المعيار الموحد)"
+else
+  say "🏠 توحيد الشبكة الداخلية: \${WD_LAN_IP:-غير معروف} ← $WD_TARGET"
+  echo "   السبب: العنوان الافتراضي 192.168.1.1 بيتعارض مع شبكة مودم المصدر (192.168.1.x غالباً)"
+  echo "   ⏳ لو اتصال SSH قطع دلوقتي — ده طبيعي — ادخل تاني على $WD_TARGET وسيب السكربت يكمل لوحده"
+  uci set network.lan.ipaddr="$WD_TARGET"
+  uci commit network
+  /etc/init.d/network restart >/dev/null 2>&1
+  sleep 12
+  if ! ip -4 route show default 2>/dev/null | grep -q default; then
+    ifup wan >/dev/null 2>&1
+    wd_wait_route >/dev/null 2>&1
+  fi
+  WD_LAN_IP=$(ip -4 addr show br-lan 2>/dev/null | awk '/inet /{split($2,a,"/"); print a[1]; exit}')
+  if [ "$WD_LAN_IP" = "$WD_TARGET" ]; then
+    echo "✅ الشبكة الداخلية بقت $WD_TARGET — لوحة الراوتر بقى الدخول عليها: http://$WD_TARGET"
+  else
+    echo "⚠️  تغيير الشبكة الداخلية ماتأكدش (الحالي: \${WD_LAN_IP:-?}) — بنكمل على أي حال"
+  fi
+fi
+# ── تثبيت وقائي لطريق الـ Gateway (بيشتغل صح في كل الحالات) ──
+wd_gw_pin >/dev/null 2>&1
+# ── لو المصدر على نفس نطاق الداخلية (192.168.1.x غالباً): توضيح + اختبار المودم ──
+WD_WANDEV=$(uci -q get network.wan.device 2>/dev/null)
+[ -z "$WD_WANDEV" ] && WD_WANDEV=$(uci -q get network.wan.ifname 2>/dev/null | awk '{print $1}')
+[ -z "$WD_WANDEV" ] && WD_WANDEV=wan
+WD_LAN_SUB=$(echo "$WD_LAN_IP" | cut -d. -f1-3)
+WD_WAN_IP=$(ip -4 addr show dev "$WD_WANDEV" 2>/dev/null | awk '/inet /{split($2,a,"/"); print a[1]; exit}')
+WD_WAN_SUB=$(echo "$WD_WAN_IP" | cut -d. -f1-3)
+if [ -n "$WD_WAN_SUB" ] && [ -n "$WD_LAN_SUB" ] && [ "$WD_LAN_SUB" = "$WD_WAN_SUB" ]; then
+  echo "ℹ️  مودم المصدر ($WD_WAN_IP) على نفس نطاق الشبكة الداخلية ($WD_LAN_IP) — الوضع مدعوم بالكامل:"
+  echo "   طريق الـ Gateway متثبت على WAN براوت /32 → النت يمشي عادي والمشكلة مش هتترجع"
+  WD_RGW=$(ip -4 route show default 2>/dev/null | head -n1 | awk '{print $3; exit}')
+  if [ -n "$WD_RGW" ] && ping -c 2 -W 2 "$WD_RGW" >/dev/null 2>&1; then
+    echo "   ✅ اتصال بالمودم سليم (ping $WD_RGW)"
+  else
+    echo "   ⚠️  مفيش رد من المودم دلوقتي ($WD_RGW) — كمّل التسطيب ولو فشل: hotspot-test"
   fi
 fi
 
@@ -1322,6 +1441,7 @@ else
   echo "⚠️  التسجيل الفوري مانجحش — أول نبضة تلقائية من wifidog هتسجله خلال 5 دقايق"
 fi
 
+LAN_IP_NOW=$(ip -4 addr show br-lan 2>/dev/null | awk '/inet /{split($2,a,"/"); print a[1]; exit}')
 echo ""
 echo "════════════════════════════════════════════════"
 echo " ✅ السكربت الشامل خلص!"
@@ -1329,6 +1449,7 @@ echo ""
 echo " GatewayID : $GW_ID"
 echo " السيرفر   : $SRV"
 echo " النسخة    : v${INSTALL_SCRIPT_VERSION}"
+echo " الشبكة الداخلية : \${LAN_IP_NOW:-192.168.1.6} — لوحة الراوتر: http://\${LAN_IP_NOW:-192.168.1.6}"
 echo ""
 echo " 🔥 جرب دلوقتي:"
 echo "    1- اعزل شبكة الواي فاي من الموبايل وارجع اتصل"
