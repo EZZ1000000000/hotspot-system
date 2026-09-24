@@ -188,7 +188,9 @@ function LoginScreen({ onLogin }:{ onLogin:(sa:SA)=>void }) {
     setLoading(true);setErr('')
     const res=await fetch('/api/superadmin/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:user,password:pass})})
     const d=await res.json()
-    if(d.success) onLogin(d.superAdmin); else setErr(d.error||'بيانات غير صحيحة')
+    if(d.success) onLogin(d.superAdmin)
+    else if(d.db&&d.db.code) setErr('🗄️ قاعدة البيانات واقفة ('+d.db.code+') — لازم تشغيل قاعدة Neon من لوحتها أو ربط قاعدة جديدة من Vercel ← Storage')
+    else setErr(d.error||'بيانات غير صحيحة')
     setLoading(false)
   }
   return (
