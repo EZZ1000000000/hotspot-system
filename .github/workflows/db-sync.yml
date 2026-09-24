@@ -19,11 +19,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        site: [gamma, kappa, dun, seven]
+        include:
+          - { site: gamma,    url: "https://hotspot-system-gamma.vercel.app" }
+          - { site: kappa,    url: "https://hotspot-system-kappa.vercel.app" }
+          - { site: dun,      url: "https://hotspot-system-dun.vercel.app" }
+          - { site: seven,    url: "https://hotspot-system-seven.vercel.app" }
+          - { site: layalina, url: "https://layalina-cafe.vercel.app" }
     steps:
       - name: Trigger /api/cron/db-sync on ${{ matrix.site }}
         run: |
-          URL="https://hotspot-system-${{ matrix.site }}.vercel.app"
+          URL="${{ matrix.url }}"
           SECRET="${{ vars.DB_SYNC_SECRET }}"
           if [ -z "$SECRET" ]; then SECRET="hotspot-cron-2024"; fi
           for i in 1 2; do
