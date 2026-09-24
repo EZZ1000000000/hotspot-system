@@ -18,11 +18,21 @@ function makePong() {
 // تسجيل heartbeat الجهاز — بيتنده كل CheckInterval (60ث) من كل راوتر
 // الراوتر بيبعت: gw_id + sys_uptime + sys_memfree + sys_load + wifidog_uptime
 // ملاحظة مهمة: لو تسجيل الـ heartbeat فشل لأي سبب، لازم برضه نرجّع Pong عشان الراوتر ميوقفش
+// الخنق في الذاكرة لكل نسخة سيرفر — بيكفي لتقليل الضغط على قاعدة Neon المجانية
+const HEARTBEAT_WRITE_EVERY_MS = 5 * 60 * 1000
+const lastHeartbeatWrite = new Map<string, number>()
+
 async function recordHeartbeat(req: NextRequest) {
   try {
     const sp = req.nextUrl.searchParams
     const gwId = sp.get('gw_id')
     if (!gwId) return
+
+    // خنق الكتابة: أقصى مرة كل 5 دقايق لكل راوتر — الباقي Pong فوري بدون لمس الداتابيز
+    // (كان بيكتب كل 60ث من كل راوتر على مدار الساعة → قاعدة Neon شغالة 24/7 → استهلاك ساعات الحساب)
+    const nowTs = Date.now()
+    if (nowTs - (lastHeartbeatWrite.get(gwId) || 0) < HEARTBEAT_WRITE_EVERY_MS) return
+    lastHeartbeatWrite.set(gwId, nowTs)
 
     const now = new Date()
     const num = (k: string) => {
