@@ -1,7 +1,11 @@
 import { NextRequest } from 'next/server'
+import { after } from 'next/server'
 import { prisma } from '@/lib/prisma'
+import { maybeSyncDue, runSync } from '@/lib/db-sync'
 
 export const dynamic = 'force-dynamic'
+// المزامنة الدورية ممكن تشتغل جوه نفس الاستدعاء (بعد الرد) — محتاجة وقت أطول
+export const maxDuration = 60
 
 // wifidog بيتوقع بالضبط: Pong\n  (HTTP 200, text/plain)
 // أي حاجة تانية = "Auth server did NOT say Pong" → الراوتر يعتبر السيرفر واقف
@@ -76,11 +80,28 @@ async function recordHeartbeat(req: NextRequest) {
   }
 }
 
+// ── التشغيل الذاتي للمزامنة: بدون الاعتماد على GitHub Actions ──
+// الراوترات بتبعت ping كل دقيقة — بيتفحص (بالذاكرة الأول، مجاناً) هل عدى 25 دقيقة
+// من آخر مزامنة، لو آه بيتحجز قفل في KV وتشغّل المزامنة بعد الرد على الراوتر
+const SYNC_CHECK_EVERY_MS = 10 * 60 * 1000
+const lastSyncCheck = { at: 0 }
+
+function maybeKickSync() {
+  const now = Date.now()
+  if (now - lastSyncCheck.at < SYNC_CHECK_EVERY_MS) return
+  lastSyncCheck.at = now
+  maybeSyncDue()
+    .then(due => { if (due) after(() => { runSync().catch(() => {}) }) })
+    .catch(() => {})
+}
+
 export async function GET(req: NextRequest) {
   await recordHeartbeat(req)
+  maybeKickSync()
   return makePong()
 }
 export async function POST(req: NextRequest) {
   await recordHeartbeat(req)
+  maybeKickSync()
   return makePong()
 }

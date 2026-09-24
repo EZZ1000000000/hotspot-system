@@ -235,3 +235,21 @@ export async function storedBackupsMeta(): Promise<any[]> {
     catch { return { server: r.key, bad: true } }
   })
 }
+
+// ── التشغيل الذاتي: هل الاستحقاق للمزامنة جاء؟ ──
+// بتتنده من مسارات الترافيك المنتظم (ping الراوتر كل دقيقة) — لو عدى 25 دقيقة
+// من آخر مزامنة بتحجز قفل وتقول «شغّلني» — والشغل بيحصل بعد الرد (after)
+export async function maybeSyncDue(): Promise<boolean> {
+  const GAP_MS = 25 * 60 * 1000
+  try {
+    const row = await prisma.keyValueStore.findUnique({ where: { key: 'cluster:synclock' } })
+    const last = row?.value ? Number(row.value) || 0 : 0
+    if (Date.now() - last < GAP_MS) return false
+    await prisma.keyValueStore.upsert({
+      where: { key: 'cluster:synclock' },
+      update: { value: String(Date.now()) },
+      create: { key: 'cluster:synclock', value: String(Date.now()) },
+    })
+    return true
+  } catch { return false }
+}
