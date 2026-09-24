@@ -1,0 +1,39 @@
+# ═══ مزامنة النسخ الاحتياطي المتبادل بين السيرفرات — كل 30 دقيقة ═══
+# كل سيرفر بيعمل لقطة كاملة من بياناته ويرفعها على التلاتة التانيين،
+# وبيزامن أي قاعدة احتياطية مباشرة مسجلة عنده.
+# النتيجة: لو قاعدة أي سيرفر ماتت، آخر نسخة موجودة على سيرفرات شغالة
+# والنظام بيسترجعها لوحده (db-cluster) من غير تدخل.
+#
+# لو CRON_SECRET متغير من الافتراضي على السيرفرات:
+#   GitHub → Settings → Secrets and variables → Actions → Variables (New)
+#   الاسم: DB_SYNC_SECRET   القيمة: نفس قيمة CRON_SECRET
+name: DB Cluster Sync
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch: {}
+permissions: {}
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        site: [gamma, kappa, dun, seven]
+    steps:
+      - name: Trigger /api/cron/db-sync on ${{ matrix.site }}
+        run: |
+          URL="https://hotspot-system-${{ matrix.site }}.vercel.app"
+          SECRET="${{ vars.DB_SYNC_SECRET }}"
+          if [ -z "$SECRET" ]; then SECRET="hotspot-cron-2024"; fi
+          for i in 1 2; do
+            if curl -fsS --max-time 120 -X POST "$URL/api/cron/db-sync" -H "x-cron-secret: $SECRET"; then
+              echo
+              echo "sync ✓ (${{ matrix.site }})"
+              exit 0
+            fi
+            echo "محاولة $i فشلت — إعادة بعد 20 ثانية"
+            sleep 20
+          done
+          echo "فشل المزامنة على ${{ matrix.site }} — هيتجرب تلقائياً في التشغيل الجاي"
+          exit 0

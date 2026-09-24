@@ -1,5 +1,6 @@
 'use client'
 import { useState, useEffect, useCallback } from 'react'
+import ClusterCard from './ClusterCard'
 
 type SA = { id: string; username: string; email: string }
 type Admin = { id:string; name:string; username:string; email:string; phone?:string; maxDevices:number; maxVouchersTotal:number; totalVouchersGenerated:number; isActive:boolean; createdAt:string; canCreateUnlimited:boolean; canCreateNFC:boolean; canCreateQR:boolean; canRenewVouchers:boolean; _count?:{devices:number;vouchers:number}; __srv?:string; superAdminId?:string }
@@ -653,6 +654,7 @@ function MonitorTab() {
           {stFaulty>0&&<span style={{...S.tag(true,'#FF4444'),fontSize:10,fontWeight:900}}>⚠️ {stFaulty} جهاز فيه عطل</span>}
         </div>
       </div>
+      <ClusterCard />
       {toggleMsg&&<div style={{...S.msg(toggleMsg.startsWith('⛔')||toggleMsg.startsWith('▶️')),marginBottom:12}}>{toggleMsg}<span onClick={()=>setToggleMsg(null)} style={{cursor:'pointer',opacity:0.6}}>✕</span></div>}
       <div className="stats-grid-5" style={{marginBottom:14}}>
         {[{i:'📡',l:'جلسات نشطة',v:stats.summary.totalActiveSessions,c:'#00E676'},{i:'🟢',l:'أجهزة متصلة الآن',v:`${stOnline}/${stats.summary.totalDevices}`,c:stOnline>0?'#00E676':'#354E6A'},{i:'⬇️',l:'تنزيل (كل الجلسات)',v:fmtMB(stats.summary.totalDataInMB),c:'#22d3ee'},{i:'⬆️',l:'رفع (كل الجلسات)',v:fmtMB(stats.summary.totalDataOutMB),c:'#4ade80'},{i:'🖥️',l:'أجهزة مفعّلة',v:`${stats.summary.totalActiveDevices}/${stats.summary.totalDevices}`,c:'#00D4FF'}].map((s,i)=>(
