@@ -24,20 +24,20 @@
 // (rate-limited كل 30 دقيقة) عشان ميضغطش الراوتر أو الفيد.
 // ═══════════════════════════════════════════════════════════
 
-export const WATCHDOG_VERSION = '6'
+export const WATCHDOG_VERSION = '7'
 
 export function buildWatchdogScript(): string {
   return `#!/bin/sh
-# 🛡️ الحارس الذاتي v6 (WFD_WD_VERSION=6) — شغال كل 5 دقايق من الكرون
+# 🛡️ الحارس الذاتي v7 (WFD_WD_VERSION=7) — فحوصات محلية كل 5 دقايق + مكالمات السيرفر مخنوقة
 # يصلح لوحده: uhttpd / wifidog / قاعدة الاعتراض / باك-إند iptables المعطوب
 # + كشف العملية العنيدة: wifidog ماسك GatewayID قديم بعد تحويل الجهاز
 #   بين الكافيهات → قتل قسري وإعادة تشغيل (سبب "الجهاز غير موجود أو غير نشط")
 # + كشف بقايا الكافيه القديم: سكربتات متوجهة لسيرفر تاني (سبب "الاسم بيرجع
 #   للكافيه القديم" بعد التحويل) → مسح شامل وتسطيب نظيف من سيرفرنا لوحده
-# + فرض اسم الشبكة من السيرفر كل 5 دقايق — شبكة أمان لو المزامنة وقعت
+# + فرض اسم الشبكة من السيرفر كل ساعة — شبكة أمان لو المزامنة وقعت
 # وبيحدّث نفسه من السيرفر كل ساعة — أي إصلاح جديد بيوصل لكل الراوترات لوحده
 # وبيبلّغ عن نسخة السكربت المركّبة كل ساعة — عشان اللوحة تعرف مين محدّث ومين لأ
-WFD_WD_VERSION="6"
+WFD_WD_VERSION="7"
 LOG=/tmp/hotspot_watchdog.log
 CONF=/etc/wifidog.conf
 
@@ -63,9 +63,20 @@ crontab -l 2>/dev/null | grep -q hotspot-watchdog || {
 if crontab -l 2>/dev/null | grep -Eq 'vercel\\.app'; then
   (crontab -l 2>/dev/null | grep -vE 'hotspot-|vercel\\.app'; \\
    echo "*/5 * * * * /usr/bin/hotspot-watchdog >/dev/null 2>&1"; \\
-   [ -f /usr/bin/hotspot-ssid-sync ] && echo "*/5 * * * * /usr/bin/hotspot-ssid-sync >/dev/null 2>&1"; true
+   [ -f /usr/bin/hotspot-ssid-sync ] && echo "*/60 * * * * /usr/bin/hotspot-ssid-sync >/dev/null 2>&1"; true
   ) | crontab - >/dev/null 2>&1 \\
   && wdlog "الكرون كان فيه سطور لسيرفرات تانية (بقايا كافيه قديم) → اتنضفت ورجّعنا سطورنا"
+fi
+
+# ── [0c] ترقية كرون ssid-sync القديم: كل 5 دقايق كانت بتضرب قاعدة السيرفر
+#  على الفاضي 24/7 (سبب استهلاك ساعات Neon) → كل 60 دقيقة كفاية
+if crontab -l 2>/dev/null | grep -q 'hotspot-ssid-sync'; then
+  if crontab -l 2>/dev/null | grep -q '\\*/5 \\* \\* \\* \\* /usr/bin/hotspot-ssid-sync'; then
+    (crontab -l 2>/dev/null | grep -v 'hotspot-ssid-sync'; \\
+     [ -f /usr/bin/hotspot-ssid-sync ] && echo "*/60 * * * * /usr/bin/hotspot-ssid-sync >/dev/null 2>&1"; true
+    ) | crontab - >/dev/null 2>&1 \\
+    && wdlog "كرون مزامنة الاسم اتخفف من كل 5 دقايق لكل ساعة (توفير قاعدة السيرفر)"
+  fi
 fi
 
 # ── [1] الجسر المحلي (uhttpd)
@@ -239,7 +250,11 @@ fi
 
 # ── [3b] فرض اسم الشبكة من السيرفر — شبكة أمان لو المزامنة وقعت أو اتشالت
 #  بنجيب الاسم الرسمي (wifiSSID) من سيرفرنا ونطبقه لو مختلف — نفس منطق المزامنة
-if [ -n "$SRV" ] && [ -n "$GW" ]; then
+# v7: كل 60 دقيقة بدل كل 5 — الفحوصات المحلية بتفضل كل 5 دقايق لكن مكالمات
+# السيرفر اتخنقت عشان قاعدة البيانات تنام وتوفر ساعات الحساب (سبب وقوف Neon)
+NOW=$(date +%s); TS=$(cat /tmp/wd_ssid_ts 2>/dev/null); case "$TS" in ''|*[!0-9]*) TS=0 ;; esac
+if [ -n "$SRV" ] && [ -n "$GW" ] && [ $((NOW - TS)) -ge 3600 ]; then
+  date +%s > /tmp/wd_ssid_ts
   WANT=$(uclient-fetch -q -T 15 -O - --no-check-certificate "https://\${SRV}/api/router/identity?gw_id=\${GW}" 2>/dev/null | head -n1)
   [ -z "$WANT" ] && WANT=$(wget -q -T 15 -O - --no-check-certificate "https://\${SRV}/api/router/identity?gw_id=\${GW}" 2>/dev/null | head -n1)
   WANT=$(printf '%s' "$WANT" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')

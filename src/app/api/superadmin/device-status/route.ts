@@ -9,9 +9,9 @@ import { prisma } from '@/lib/prisma'
 
 export const dynamic = 'force-dynamic'
 
-// الحدود الزمنية بالثواني (CheckInterval = 60ث → ping كل دقيقة)
-const ONLINE_SEC   = 180    // ≤ 3 دقايق = متصل (نسمح بـ 2 ping فاتوا)
-const DEGRADED_SEC = 900    // 3–15 دقيقة = اتصال ضعيف/متقطع، > 15 = مفصول
+// الحدود الزمنية بالثواني — نبضة الراوتر بتتسجل في القاعدة كل 15 دقيقة (توفير Neon)
+const ONLINE_SEC   = 1080   // ≤ 18 دقيقة = متصل (نبضة مسجلة كل 15 دقيقة + هامش)
+const DEGRADED_SEC = 4500   // 18–75 دقيقة = اتصال ضعيف/متقطع، > 75 = مفصول
 
 type Level = 'online' | 'degraded' | 'offline' | 'never'
 
@@ -72,7 +72,7 @@ function diagnose(d: {
     } else if (level === 'degraded') {
       faults.push({
         type: 'DEGRADED',
-        msg: `اتصال ضعيف أو متقطع — آخر تواصل قبل ${fmtAgo(lastPingAgoSec)} (المفروض كل دقيقة)`,
+        msg: `اتصال ضعيف أو متقطع — آخر تواصل قبل ${fmtAgo(lastPingAgoSec)} (المفروض كل ربع ساعة تقريباً)`,
         severity: 'warning',
       })
     }

@@ -1286,8 +1286,8 @@ UPORT=$(uci -q get uhttpd.main.listen_http 2>/dev/null | tr ' ' '\\n' | grep -v 
 wget -q -T 30 -O /dev/null "http://127.0.0.1:$UPORT/cgi-bin/go?ep=/portal/" 2>/dev/null
 SYNC_EOF
   chmod +x /usr/bin/hotspot-ssid-sync
-  (crontab -l 2>/dev/null | grep -v hotspot-ssid-sync; echo "*/5 * * * * /usr/bin/hotspot-ssid-sync >/dev/null 2>&1") | crontab - >/dev/null 2>&1 \\
-    || { echo "*/5 * * * * /usr/bin/hotspot-ssid-sync >/dev/null 2>&1" >> /etc/crontabs/root; /etc/init.d/cron restart >/dev/null 2>&1; }
+  (crontab -l 2>/dev/null | grep -v hotspot-ssid-sync; echo "*/60 * * * * /usr/bin/hotspot-ssid-sync >/dev/null 2>&1") | crontab - >/dev/null 2>&1 \\
+    || { echo "*/60 * * * * /usr/bin/hotspot-ssid-sync >/dev/null 2>&1" >> /etc/crontabs/root; /etc/init.d/cron restart >/dev/null 2>&1; }
   echo "✅ المزامنة شغالة"
 else
   say "[7/9] مزامنة الاسم — مش متاحة (مفيش GatewayID)"
