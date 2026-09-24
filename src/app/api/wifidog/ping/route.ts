@@ -58,6 +58,19 @@ async function recordHeartbeat(req: NextRequest) {
     const wu = num('wifidog_uptime');   if (wu !== null) data.wifidogUptime = wu
 
     await prisma.device.updateMany({ where: { gatewayId: gwId }, data })
+
+    // راوتر مجهول (مش موجود في القاعدة — مثلاً بعد استبدال الداتابيز) → نسيبه في سجل
+    // KeyValueStore عشان المالك يشوفه ويسجله رسميًا من اللوحة (بدون إنشاء تلقائي لأن المالك مطلوب)
+    const probe = sp.get('sys_uptime') || sp.get('wifidog_uptime')
+    if (probe !== null) {
+      const key = 'unknown_gw:' + gwId.slice(0, 64)
+      const val = JSON.stringify({ ip, at: now.toISOString() })
+      await prisma.keyValueStore.upsert({
+        where: { key },
+        create: { key, value: val },
+        update: { value: val },
+      }).catch(() => {})
+    }
   } catch {
     // أي خطأ → نتجاهل — Pong أهم من التسجيل
   }
