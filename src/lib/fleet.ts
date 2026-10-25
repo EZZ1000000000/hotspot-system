@@ -1,7 +1,7 @@
 // ═══ معلومات أسطول السيرفرات (Gamma / Kappa / Dun / Seven) ═══
 // بتستخدمها طبقة الحماية: النسخ الاحتياطي المتبادل + الاسترجاع الذاتي بين السيرفرات
 export const FLEET: Record<string, { url: string; label: string }> = {
-  gamma: { url: 'https://hotspot-system-gamma.vercel.app',  label: 'السيرفر الرئيسي (ليالينا)' },
+  gamma: { url: 'https://hotspot-system-gamma.vercel.app',  label: 'السيرفر الرئيسي (الجوهرة)' },
   kappa: { url: 'https://hotspot-system-kappa.vercel.app',  label: 'سيرفر الشعلة' },
   dun:   { url: 'https://hotspot-system-dun.vercel.app',    label: 'سيرفر السرايا' },
   seven: { url: 'https://hotspot-system-seven.vercel.app',  label: 'سيرفر البرنس' },

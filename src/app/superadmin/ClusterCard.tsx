@@ -17,7 +17,7 @@ type ClusterInfo = {
 }
 
 const SRV = [
-  { key: 'gamma', label: 'الرئيسي (ليالينا)', color: '#00D4FF' },
+  { key: 'gamma', label: 'الرئيسي (الجوهرة)', color: '#00D4FF' },
   { key: 'kappa', label: 'الشعلة',           color: '#fb923c' },
   { key: 'dun',   label: 'السرايا',          color: '#00E676' },
   { key: 'seven', label: 'البرنس',           color: '#818cf8' },
