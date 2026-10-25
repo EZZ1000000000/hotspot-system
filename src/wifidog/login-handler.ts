@@ -157,6 +157,17 @@ export async function handlePortalLogin(body: {
   }
   // ═══════════════════════════════════════════════════════════════════════════
 
+  // ── تنظيف الجلسات الميتة لنفس الكرت ──────────────────────────────────────
+  // لو الجهاز غيّر اسم الشبكة (أو العميل قطع فترة طويلة) والموبايل غيّر الـ MAC،
+  // الجلسة القديمة بتفضل ACTIVE في الداتابيز ما تعديش عليها counters — وده كان
+  // بيمنع العميل يدخل كرته تاني لو الحد الأقصى للأجهزة = 1
+  // أي جلسة ACTIVE من غير ping لأكتر من 30 دقيقة = ميتة → ننهيها
+  const staleCutoff = new Date(now.getTime() - 30 * 60 * 1000)
+  prisma.session.updateMany({
+    where: { voucherId: voucher.id, status: 'ACTIVE', lastPingAt: { lt: staleCutoff } },
+    data:  { status: 'ENDED', endedAt: now, endReason: 'TIMEOUT' },
+  }).catch(() => {})
+
   // -- جلسة نشطة بنفس MAC؟ رجع نفس التوكن ----------------------------------
   const existingSession = await prisma.session.findFirst({
     where: { macAddress: mac, voucherId: voucher.id, status: 'ACTIVE' },

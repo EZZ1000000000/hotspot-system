@@ -3,6 +3,17 @@
 // stage=login    → أول تحقق بعد إدخال التوكن
 // stage=counters → كل دقيقة بالبايتس التراكمية
 //
+// ── الإصلاح 2026-10-25: محاسبة على مستوى الكرت مش الجلسة ──
+// المشكلة: لما العميل يغيّر MAC بتاعه (تغيير اسم الشبكة / موبايل جديد) ويعيد
+// نفس الكرت، كانت جلسة جديدة بعداد صفري بتتسجل، والفحص كان بيقرا عداد
+// الجلسة الجديدة (صفر) مش عداد الكرت الحقيقي → الكرت عمره ما يقفل!
+// الحل:
+//   1) الوقت دايماً يتحسب من voucher.usedAt (أول استخدام) — مش من بداية الجلسة
+//   2) الداتا تتجمع على الكرت بالفارق (زيادة الـ counters عن آخر قيمة للجلسة)
+//      فتغيير الـ MAC ما يصفّرش الاستهلاك
+//   3) لو الكرت وصل حده → كل جلسات الكرت النشطة تتقفل فوراً (مش الجلسة الحالية بس)
+//   4) لو الكرت حالته EXPIRED/DEPLETED وأي جلسة لسه شغالة → قطع فوري
+//
 // ── قاعدة ذهبية ──────────────────────────────
 // لازم نرجع Auth: 1 أو Auth: 0 دايماً
 // Auth: -1 يخلي wifidog يوقف الاتصال ويرمي error
@@ -43,11 +54,25 @@ export async function handleWifidogAuth(searchParams: URLSearchParams) {
         return 'Auth: 0'
       }
 
+      // الكرت خلص (EXPIRED/DEPLETED) وأي جلسة لسه شغالة → قطع فوري
+      // (كانت دي ثغرة: الجلسة الجديدة بعد تغيير الـ MAC كانت بتكمل شغالة)
+      if (session.voucher && (session.voucher.status === 'EXPIRED' || session.voucher.status === 'DEPLETED')) {
+        const nowD = new Date()
+        prisma.session.updateMany({
+          where: { voucherId: session.voucherId, status: 'ACTIVE' },
+          data:  { status: 'ENDED', endedAt: nowD, endReason: session.voucher.status === 'DEPLETED' ? 'DATA_DEPLETED' : 'TIME_EXPIRED' },
+        }).catch(() => {})
+        return 'Auth: 0'
+      }
+
       if (session.status === 'ACTIVE') {
         const now = new Date()
         if (session.voucher && session.voucher.packageType !== 'UNLIMITED') {
-          const elapsedMin  = (now.getTime() - new Date(session.startedAt).getTime()) / 60000
-          const totalDataMB = session.dataInMB + session.dataOutMB
+          // ⏱️ الوقت من أول استخدام للكرت (voucher.usedAt) — مش من بداية الجلسة
+          const timeBase   = (session.voucher as any)?.usedAt || session.startedAt
+          const elapsedMin = (now.getTime() - new Date(timeBase).getTime()) / 60000
+          // 📊 الداتا من إجمالي الكرت المتراكم (مش عداد الجلسة الحالية)
+          const totalDataMB = session.voucher ? (session.voucher as any).dataUsedMB || 0 : (session.dataInMB + session.dataOutMB)
 
           const { depleted, reason } = isVoucherDepleted({
             ...session.voucher,
@@ -57,13 +82,18 @@ export async function handleWifidogAuth(searchParams: URLSearchParams) {
 
           if (depleted) {
             Promise.all([
+              // قفل كل جلسات الكرت النشطة (أي MAC كان شغال بيه)
+              prisma.session.updateMany({
+                where: { voucherId: session.voucherId, status: 'ACTIVE' },
+                data:  { status: 'ENDED', endedAt: now, endReason: reason as any, lastPingAt: now },
+              }).catch(() => {}),
               prisma.session.update({
                 where: { id: session.id },
-                data:  { status: 'ENDED', endedAt: now, endReason: reason as any, timeUsedMin: elapsedMin, lastPingAt: now },
+                data:  { timeUsedMin: elapsedMin },
               }).catch(() => {}),
               prisma.voucher.update({
                 where: { id: session.voucherId },
-                data:  { status: reason === 'DATA_DEPLETED' ? 'DEPLETED' : 'EXPIRED' },
+                data:  { status: reason === 'DATA_DEPLETED' ? 'DEPLETED' : 'EXPIRED', timeUsedMin: elapsedMin },
               }).catch(() => {}),
             ])
             return 'Auth: 0'
@@ -95,15 +125,23 @@ export async function handleWifidogAuth(searchParams: URLSearchParams) {
     if (session.device && !session.device.isActive) return 'Auth: 0'
     if (session.status !== 'ACTIVE') return 'Auth: 0'
 
+    // الكرت خلص (EXPIRED/DEPLETED) → قطع فوري لأي جلسة لسه شغالة عليه
+    if (session.voucher && (session.voucher.status === 'EXPIRED' || session.voucher.status === 'DEPLETED')) {
+      const nowD = new Date()
+      prisma.session.updateMany({
+        where: { voucherId: session.voucherId, status: 'ACTIVE' },
+        data:  { status: 'ENDED', endedAt: nowD, endReason: session.voucher.status === 'DEPLETED' ? 'DATA_DEPLETED' : 'TIME_EXPIRED' },
+      }).catch(() => {})
+      return 'Auth: 0'
+    }
+
     // الكرت اتوقف من الإدارة → قطع في أول counters
     if (session.voucher && session.voucher.status === 'DISABLED') {
       const nowD = new Date()
-      Promise.all([
-        prisma.session.update({
-          where: { id: session.id },
-          data:  { status: 'ENDED', endedAt: nowD, endReason: 'ADMIN_KICK', lastPingAt: nowD },
-        }).catch(() => {}),
-      ])
+      prisma.session.updateMany({
+        where: { voucherId: session.voucherId, status: 'ACTIVE' },
+        data:  { status: 'ENDED', endedAt: nowD, endReason: 'ADMIN_KICK' },
+      }).catch(() => {})
       return 'Auth: 0'
     }
 
@@ -111,25 +149,40 @@ export async function handleWifidogAuth(searchParams: URLSearchParams) {
     const totalInMB   = bytesToMB(incoming)
     const totalOutMB  = bytesToMB(outgoing)
     const totalDataMB = totalInMB + totalOutMB
-    const totalTimeMin = (now.getTime() - new Date(session.startedAt).getTime()) / 60000
+
+    // ⏱️ الوقت دايماً من أول استخدام للكرت (voucher.usedAt) — تغيير الـ MAC أو
+    // إعادة الدخول مش بترجّع العداد للصفر. (كان دي الثغرة الأساسية)
+    const timeBase = (session.voucher as any)?.usedAt || session.startedAt
+    const totalTimeMin = (now.getTime() - new Date(timeBase).getTime()) / 60000
+
+    // 📊 الداتا: الفارق بين الـ counters الجديدة وآخر قيمة محفوظة للجلسة ده
+    // بيتجمع على الكرت نفسه — فلو العميل اقطع واعاد (MAC جديد بعداد صفري)
+    // استهلاكه القديم يفضل محفوظ على الكرت والجديد بيتزاد عليه
+    const prevSessionMB = (session.dataInMB || 0) + (session.dataOutMB || 0)
+    const incrementMB   = Math.max(0, totalDataMB - prevSessionMB)
+    const voucherDataUsedMB = (session.voucher ? (session.voucher as any).dataUsedMB || 0 : 0) + incrementMB
 
     if (session.voucher.packageType !== 'UNLIMITED') {
       const { depleted, reason } = isVoucherDepleted({
         ...session.voucher,
-        dataUsedMB:  totalDataMB,
+        dataUsedMB:  voucherDataUsedMB,
         timeUsedMin: totalTimeMin,
       })
       if (depleted) {
         Promise.all([
+          // قفل كل جلسات الكرت النشطة — أي جهاز/MAC شغال بنفس الكرت يتقطع
+          prisma.session.updateMany({
+            where: { voucherId: session.voucherId, status: 'ACTIVE' },
+            data:  { status: 'ENDED', endedAt: now, endReason: reason as any, lastPingAt: now },
+          }).catch(() => {}),
           prisma.session.update({
             where: { id: session.id },
-            data:  { status: 'ENDED', endedAt: now, endReason: reason as any,
-                     dataInMB: totalInMB, dataOutMB: totalOutMB, timeUsedMin: totalTimeMin, lastPingAt: now },
+            data:  { dataInMB: totalInMB, dataOutMB: totalOutMB, timeUsedMin: totalTimeMin },
           }).catch(() => {}),
           prisma.voucher.update({
             where: { id: session.voucherId },
             data:  { status: reason === 'DATA_DEPLETED' ? 'DEPLETED' : 'EXPIRED',
-                     dataUsedMB: totalDataMB, timeUsedMin: totalTimeMin },
+                     dataUsedMB: voucherDataUsedMB, timeUsedMin: totalTimeMin },
           }).catch(() => {}),
         ])
         return 'Auth: 0'
@@ -144,7 +197,7 @@ export async function handleWifidogAuth(searchParams: URLSearchParams) {
       }).catch((e) => console.error('[counters session update]', e)),
       prisma.voucher.update({
         where: { id: session.voucherId },
-        data:  { dataUsedMB: totalDataMB, timeUsedMin: totalTimeMin },
+        data:  { dataUsedMB: voucherDataUsedMB, timeUsedMin: totalTimeMin },
       }).catch((e) => console.error('[counters voucher update]', e)),
     ])
 
