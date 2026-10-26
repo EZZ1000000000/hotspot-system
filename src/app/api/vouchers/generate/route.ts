@@ -45,11 +45,12 @@ export async function POST(req: NextRequest) {
     if (count > remaining)
       return NextResponse.json({ error: `تجاوزت الحد المسموح. المتبقي: ${remaining} كارت` }, { status: 403 })
 
-    // سقف الدفعة الواحدة — السعة الكلية لكل كافيه 1,000,000 كارت
-    // (التوليد الكمي بيتم على دفعات — كل طلب لحد 100 ألف)
-    const MAX_PER_REQUEST = 100000
+    // سقف الدفعة الواحدة — 5000 كارت (مطابق لسقف الطباعة)
+    // دفعة 90 ألف كانت بتغرق ذاكرة قاعدة البيانات (pg_dynshmem) وتوقّف السستم كله
+    // الكميات الكبيرة بتتولّد على دفعات متعددة — كل طلب لحد 5000
+    const MAX_PER_REQUEST = 5000
     if (!count || count < 1 || count > MAX_PER_REQUEST)
-      return NextResponse.json({ error: `عدد الكروت لازم يكون من 1 لـ 100,000 في الطلب الواحد` }, { status: 400 })
+      return NextResponse.json({ error: `الحد الأقصى 5,000 كارت في الطلب الواحد — وزّع الكمية على دفعات` }, { status: 400 })
 
     // احسب تاريخ الانتهاء
     let expiry: Date | null = null
