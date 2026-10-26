@@ -36,11 +36,19 @@
 // (rate-limited كل 30 دقيقة) عشان ميضغطش الراوتر أو الفيد.
 // ═══════════════════════════════════════════════════════════
 
-export const WATCHDOG_VERSION = '11'
+export const WATCHDOG_VERSION = '12'
 
 export function buildWatchdogScript(): string {
   return `#!/bin/sh
-# 🛡️ الحارس الذاتي v11 (WFD_WD_VERSION=11) — فحوصات محلية كل 5 دقايق + مكالمات السيرفر مخنوقة
+# 🛡️ الحارس الذاتي v12 (WFD_WD_VERSION=12) — إصلاح جوهري: أسماء سلاسل wifidog الحقيقية
+# v12 = العيب القاتل في v10/v11: فحص الربط كان بيدوّر على 'wifidog' بأحرف صغيرة في FORWARD،
+#   وwifidog الحديث بيسمّي سلاسله 'WiFiDog_<if>_*' بحروف كبيرة → الفحص كان بيقول
+#   «الربط مقطوع» على طول → إعادة تشغيل wifidog كل 10 دقايق → أي عميل بكرت سليم
+#   بيتطرد طول الوقت (ده سبب «الكروت بتموت والناس بتققط»). v12 بيتعامل مع النظامين:
+#   الجديد WiFiDog_<if>_Internet/Unknown + القديم wd_outgoing/wd_incoming
+#   + [3c++] إنفورسمنت دائم لسلسلة المنع (Unknown لازم فيها REJECT فعلي)
+#   + TrustedMACList مسموحة لو الإدارة عملت /etc/hotspot-trusted-allow (جهاز الإدارة بس)
+# v11 — فحوصات محلية كل 5 دقايق + مكالمات السيرفر مخنوقة
 # v10 إضافة — قفل «الفلتر اليتيم»: قواعد wifidog موجودة بس مش مربوطة على FORWARD
 #   (سباق إقلاع: wifidog بنى قواعده وfirewall أعاد البناء بعده وشال الربط)
 #   النتيجة كانت: البورتال بيظهر لأجهزة بالصدفة (HTTP) والنت كلها مفتوحة للباقي.
@@ -67,7 +75,7 @@ export function buildWatchdogScript(): string {
 # + فرض اسم الشبكة من السيرفر كل ساعة — شبكة أمان لو المزامنة وقعت
 # وبيحدّث نفسه من السيرفر كل ساعة — أي إصلاح جديد بيوصل لكل الراوترات لوحده
 # وبيبلّغ عن نسخة السكربت المركّبة كل ساعة — عشان اللوحة تعرف مين محدّث ومين لأ
-WFD_WD_VERSION="11"
+WFD_WD_VERSION="12"
 LOG=/tmp/hotspot_watchdog.log
 CONF=/etc/wifidog.conf
 
@@ -77,6 +85,13 @@ wdlog(){
   case "$L" in ''|*[!0-9]*) L=0 ;; esac
   [ "$L" -gt 200 ] && { tail -n 80 "$LOG" > "$LOG.t" 2>/dev/null; mv "$LOG.t" "$LOG" 2>/dev/null; }
   return 0
+}
+
+# ── واجهة البوابة من الإعدادات (v12) — أساس أسماء السلاسل في wifidog الحديث
+wd_if(){
+  WIF=$(sed -n 's/^GatewayInterface[[:space:]]*//p' "$CONF" 2>/dev/null | head -n1 | tr -d ' \\t')
+  case "$WIF" in ''|*[!A-Za-z0-9._-]*) WIF=br-lan ;; esac
+  echo "$WIF"
 }
 
 # ── هوية الجهاز من wifidog.conf (نسخة واحدة للحارس على أي راوتر)
@@ -292,7 +307,9 @@ fi
 # ── [3a-sec] إزالة TrustedMACList — باب تخطي البورتال ──
 # أي أجهزة في القايمة دي بتفتح النت من غير صفحة دخول خالص. تسطيبنا مبيكتبش
 # القايمة دي أبدًا — وجودها معناه بقايا إعداد قديم/يدوي لازم ينشال فورًا
-if grep -qi '^[[:space:]]*TrustedMACList' "$CONF" 2>/dev/null; then
+# v12: لو الإدارة عملت ملف /etc/hotspot-trusted-allow — إذن رسمي بإبقاء جهاز الإدارة
+# موثوق (بيتعمل بأداة wh_trust.sh). من غير الملف: بنشالها فورًا زي v8 (باب تخطي مقفول)
+if grep -qi '^[[:space:]]*TrustedMACList' "$CONF" 2>/dev/null && [ ! -f /etc/hotspot-trusted-allow ]; then
   sed -i '/^[[:space:]]*TrustedMACList[[:space:]]/d; /^[[:space:]]*TrustedMACList$/d' "$CONF" 2>/dev/null
   wd_frs
   wdlog "🔒 TrustedMACList اتنشالت من wifidog.conf (كانت بتسمح لأجهزة تخطي البورتال) — wifidog اتعاد تشغيله"
@@ -326,22 +343,38 @@ fi
 # هنا بنفحص الربط نفسه. الإصلاح v11: حقن مباشر على FORWARD لو السلاسل حية (بلا أي إزعاج)،
 # وإعادة تشغيل wifidog بس لو السلاسل نفسها ناقصة — عشان مندخلش في حلقة إعادة تشغيل بتحرق الحقن.
 wd_fwd_hooked(){
-  iptables -t filter -S FORWARD 2>/dev/null | grep -qE 'wd_outgoing|wd_incoming|wd_default|wifidog'
+  # v12: مطابقة غير حساسة لحالة الحروف — السلاسل الفعلية اسمها WiFiDog_<if>_* بحروف كبيرة
+  # (العيب القاتل في v10/v11: 'wifidog' صغيرة مكانتش بتطابق → «الربط مقطوع» دايماً)
+  iptables -t filter -S FORWARD 2>/dev/null | grep -qiE 'wifidog|wd_outgoing|wd_incoming|wd_default'
 }
-# شرط الحقن الآمن: سلاسل wifidog موجودة وفيها منع فعلي (REJECT/DROP)
-# عشان منحقنش ربط على سلاسل فاضية — لو فاضية الحقن مش هيفيد وwd_frs هو الحل
+# شرط الحقن الآمن (v12): يدعم النظامين
+#   الجديد (wifidog 1.3.x): WiFiDog_<if>_Unknown لازم يكون فيها REJECT فعلي (قفل غير-المصادقين)
+#   القديم: wd_outgoing/wd_incoming فيها REJECT/DROP
 wd_chains_alive(){
-  iptables -t filter -S wd_outgoing 2>/dev/null | grep -qE 'REJECT|DROP|wd_' && \
-  iptables -t filter -S wd_incoming 2>/dev/null | grep -qE 'REJECT|DROP|wd_'
+  WIF=$(wd_if)
+  if iptables -t filter -S "WiFiDog_\${WIF}_Unknown" >/dev/null 2>&1; then
+    iptables -t filter -S "WiFiDog_\${WIF}_Unknown" 2>/dev/null | grep -qiE 'REJECT|DROP'
+    return $?
+  fi
+  iptables -t filter -S wd_outgoing 2>/dev/null | grep -qiE 'REJECT|DROP|wd_' && \
+  iptables -t filter -S wd_incoming 2>/dev/null | grep -qiE 'REJECT|DROP|wd_'
 }
-# حقن الربط على FORWARD — بيقري واجهة البوابة من wifidog.conf ويربط سلاسل wifidog
+# حقن الربط على FORWARD (v12) — بيربط السلسلة الصح حسب نظام wifidog المكتشف
 wd_hook_fwd(){
-  WIFIIF=$(sed -n 's/^GatewayInterface[[:space:]]*//p' "$CONF" 2>/dev/null | head -n1 | tr -d ' \\t')
-  case "$WIFIIF" in ''|*[!A-Za-z0-9._-]*) WIFIIF=br-lan ;; esac
-  iptables -t filter -C FORWARD -i "$WIFIIF" -j wd_outgoing 2>/dev/null || iptables -t filter -I FORWARD 1 -i "$WIFIIF" -j wd_outgoing
-  iptables -t filter -C FORWARD -o "$WIFIIF" -j wd_incoming 2>/dev/null || iptables -t filter -I FORWARD 1 -o "$WIFIIF" -j wd_incoming
+  WIF=$(wd_if)
+  if iptables -t filter -S "WiFiDog_\${WIF}_Internet" >/dev/null 2>&1; then
+    iptables -t filter -C FORWARD -i "$WIF" -j "WiFiDog_\${WIF}_Internet" 2>/dev/null || \
+      iptables -t filter -I FORWARD 1 -i "$WIF" -j "WiFiDog_\${WIF}_Internet"
+  fi
+  if iptables -t filter -S wd_outgoing >/dev/null 2>&1; then
+    iptables -t filter -C FORWARD -i "$WIF" -j wd_outgoing 2>/dev/null || iptables -t filter -I FORWARD 1 -i "$WIF" -j wd_outgoing
+  fi
+  if iptables -t filter -S wd_incoming >/dev/null 2>&1; then
+    iptables -t filter -C FORWARD -o "$WIF" -j wd_incoming 2>/dev/null || iptables -t filter -I FORWARD 1 -o "$WIF" -j wd_incoming
+  fi
 }
 if pgrep wifidog >/dev/null 2>&1 && command -v iptables >/dev/null 2>&1; then
+  WIF=$(wd_if)
   if ! wd_fwd_hooked; then
     TSF=/tmp/wd_hook_ts
     NOW=$(date +%s); TS=$(cat "$TSF" 2>/dev/null); case "$TS" in ''|*[!0-9]*) TS=0 ;; esac
@@ -352,7 +385,7 @@ if pgrep wifidog >/dev/null 2>&1 && command -v iptables >/dev/null 2>&1; then
         date +%s > "$TSF"
         wd_hook_fwd
         if wd_fwd_hooked; then
-          wdlog "🔒 الفلتر اليتيم اتصلك: ربطنا قواعد wifidog على FORWARD مباشرة (\${WIFIIF}) — النت مقفول إلا بكروت سليمة ✅"
+          wdlog "🔒 الفلتر اليتيم اتصلك: ربطنا قواعد wifidog على FORWARD مباشرة (\${WIF}) — النت مقفول إلا بكروت سليمة ✅"
         else
           wdlog "⚠️ حقن ربط FORWARD فشل — هنعيد المحاولة بعد 15 دقيقة"
         fi
@@ -371,7 +404,7 @@ if pgrep wifidog >/dev/null 2>&1 && command -v iptables >/dev/null 2>&1; then
           if wd_chains_alive; then
             wd_hook_fwd
             if wd_fwd_hooked; then
-              wdlog "🔒 الفلتر اليتيم: إعادة تشغيل wifidog + ربط FORWARD (\${WIFIIF}) بعد انتظار \${N}×5 ثانية ✅"
+              wdlog "🔒 الفلتر اليتيم: إعادة تشغيل wifidog + ربط FORWARD (\${WIF}) بعد انتظار \${N}×5 ثانية ✅"
             else
               wdlog "⚠️ ربط FORWARD فشل بعد إعادة التشغيل — هنعيد المحاولة"
             fi
@@ -379,6 +412,33 @@ if pgrep wifidog >/dev/null 2>&1 && command -v iptables >/dev/null 2>&1; then
           fi
         done
       fi
+    fi
+  fi
+fi
+
+# ── [3c++] إنفورسمنت دائم (v12): قفل غير-المصادقين لازم يكون حي حتى لو الربط سليم ──
+# الحالة الخفية: الربط موجود بس سلسلة المنع (Unknown) فقدت REJECT بتاعها → نت ببلاش
+# وكل الفحوصات القديمة بتقول سليم. v12 بيفحص سلسلة المنع لوحدها — لو ناقصة → إعادة تشغيل
+# محدودة (نفس rate-limit [3c+] عشان مايتكررش إعادة تشغيل في نفس الدورة)
+if pgrep wifidog >/dev/null 2>&1 && command -v iptables >/dev/null 2>&1; then
+  WIF=$(wd_if)
+  BLKOK=0
+  if iptables -t filter -S "WiFiDog_\${WIF}_Unknown" >/dev/null 2>&1; then
+    iptables -t filter -S "WiFiDog_\${WIF}_Unknown" 2>/dev/null | grep -qiE 'REJECT|DROP' && BLKOK=1
+  elif iptables -t filter -S wd_outgoing >/dev/null 2>&1; then
+    iptables -t filter -S wd_outgoing 2>/dev/null | grep -qiE 'REJECT|DROP' && BLKOK=1
+  else
+    BLKOK=2
+  fi
+  if [ "$BLKOK" != "1" ]; then
+    TSF3=/tmp/wd_frs_ts
+    NOW=$(date +%s); TS3=$(cat "$TSF3" 2>/dev/null); case "$TS3" in ''|*[!0-9]*) TS3=0 ;; esac
+    if [ $((NOW - TS3)) -ge 600 ]; then
+      date +%s > "$TSF3"
+      wd_frs
+      sleep 5
+      if wd_chains_alive && ! wd_fwd_hooked; then wd_hook_fwd; fi
+      wdlog "🔒 قفل غير-المصادقين كان ناقص (سلسلة المنع من غير REJECT) → wifidog اتعاد تشغيله ورجع القفل ✅"
     fi
   fi
 fi
@@ -473,7 +533,8 @@ if [ $((NOW - TS)) -ge 600 ] && [ -n "$SRV" ] && [ -n "$GW" ]; then
     *PURGE*)
       wdlog "🚨 أمر إدارة: غسل كامل لذاكرة wifidog (طرد كل المصادقين) — المشتركين بكرت سليم هيدخلوا الكود تاني"
       wd_frs
-      wdlog "🚨 الغسل اتنفذ — wifidog اتعاد تشغيله بقائمة عملاء فاضية"
+      command -v conntrack >/dev/null 2>&1 && conntrack -F >/dev/null 2>&1
+      wdlog "🚨 الغسل اتنفذ — wifidog بقائمة عملاء فاضية وكل الاتصالات المفتوحة اتقطعت"
     ;;
   esac
 fi
