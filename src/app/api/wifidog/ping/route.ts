@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { maybeSyncDue } from '@/lib/db-sync'
 import { cronSecret } from '@/lib/fleet'
+import { reapIdleSessions } from '@/lib/reaper'
 
 export const dynamic = 'force-dynamic'
 
@@ -103,13 +104,22 @@ function maybeKickSync(req: NextRequest) {
     .catch(() => {})
 }
 
+// ── حصاد الجلسات الشبح: جنب النبضة، بخنق داخلي (كل دقيقتين كحد أقصى) ──
+// الراوترات بتنبض كل دقيقة → الحصاد شغال دايماً حتى لو مفيش حد بيحاول يدخل
+// (كان زمان شغال من server.js — على Vercel مفيش cron فبنركبه هنا)
+function maybeReap() {
+  reapIdleSessions().catch(() => {})
+}
+
 export async function GET(req: NextRequest) {
   await recordHeartbeat(req)
   maybeKickSync(req)
+  maybeReap()
   return makePong()
 }
 export async function POST(req: NextRequest) {
   await recordHeartbeat(req)
   maybeKickSync(req)
+  maybeReap()
   return makePong()
 }

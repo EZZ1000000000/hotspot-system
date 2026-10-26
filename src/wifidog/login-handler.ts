@@ -1,10 +1,15 @@
 import { prisma } from '../lib/prisma'
 import { generateVoucherCode, isVoucherDepleted } from '../lib/voucher'
+import { reapIdleSessions } from '../lib/reaper'
 
 export async function handlePortalLogin(body: {
   code: string; mac: string; ip: string; gatewayId: string; hostname?: string
 }) {
   let { code, mac, ip, gatewayId, hostname } = body
+
+  // حصاد الجلسات الشبح (بخنق داخلي — غالباً بيرجع فوراً بدون لمس القاعدة)
+  // من غيره الجلسات الميتة بتضخم أرقام اللوحة وبتفضل مفتوحة للركوب
+  await reapIdleSessions().catch(() => {})
 
   const cleanCode     = code.toUpperCase().replace(/[^A-Z0-9]/g, '')
   const formattedCode = cleanCode.match(/.{1,4}/g)?.join('-') || cleanCode
@@ -46,17 +51,12 @@ export async function handlePortalLogin(body: {
     return { success: false, message: '⛔ الاشتراك موقوف حالياً من إدارة النظام — تواصل مع الإدارة' }
 
   // -- دور على الكود ---------------------------------------------------------
+  // ── إصلاح أمني 2026-10-26: المطابقة الجزئية (startsWith) اتشالت ──
+  // كانت بتخلي أول 8 حروف من أي كود أطول يفتح الكرت كله — يعني نص الكود
+  // يفتح = نص مساحة التخمين. دلوقتي المطابقة تامة بس (باصفة الشرطات
+  // وبدونها — عشان شكل الإدخال المختلف)
   let voucher = await prisma.voucher.findUnique({ where: { code: formattedCode } })
   if (!voucher) voucher = await prisma.voucher.findUnique({ where: { code: cleanCode } })
-  if (!voucher && cleanCode.length >= 8) {
-    voucher = await prisma.voucher.findFirst({
-      where: {
-        code: { startsWith: cleanCode },
-        status: { in: ['UNUSED', 'ACTIVE'] },
-        hotspotAdminId: device.hotspotAdminId,
-      }
-    })
-  }
   if (!voucher) return { success: false, message: 'الكود غير صحيح' }
 
   // ── كرت موقوف من الإدارة ──
@@ -192,12 +192,32 @@ export async function handlePortalLogin(body: {
     where: { macAddress: mac, voucherId: voucher.id, status: 'ACTIVE' },
   })
   if (existingSession) {
+    // ── تصحيح ذاتي: لو تفعيل الكرت فشل يوم إنشاء الجلسة (خطأ لحظي قديم) ──
+    // كان ممكن الكرت يفضل UNUSED من غير usedAt رغم جلسة شغالة عليه —
+    // وده كان بيسمح بإعادة تفعيله من جهاز تاني أثناء الجلسة (مشاركة كود).
+    // هنا بنصلح الحالة فوراً فالمحتفظ سليم: جهاز واحد = usageCount واحد
+    if (voucher.status === 'UNUSED' || !voucher.usedAt) {
+      await prisma.voucher.update({
+        where: { id: voucher.id },
+        data: {
+          status:     'ACTIVE',
+          usedAt:     voucher.usedAt || existingSession.startedAt,
+          usageCount: voucher.usedAt ? undefined : { increment: 1 },
+          deviceId:   voucher.deviceId || device.id,
+        },
+      }).catch(() => {})
+    }
     return { success: true, token: existingSession.token, entryMethod: voucher.voucherType }
   }
 
   // -- فحص عدد المستخدمين ---------------------------------------------------
+  // ── حماية 2026-10-26: حد الأجهزة صفر/فارغ = جهاز واحد مش «بلا حد» ──
+  // الفحص القديم كان بيتخطى كل الفحوصات لو maxUsageCount=0 (بيانات قديمة
+  // أو استيراد) — فيبقى الكرت مفتوح لأي عدد أجهزة. القاعدة الآن: أي كرت
+  // عادي حدّه الأدنى جهاز واحد.
+  const deviceLimit = Math.max(1, voucher.maxUsageCount || 0)
   const activeSessions = await prisma.session.count({ where: { voucherId: voucher.id, status: 'ACTIVE' } })
-  if (voucher.maxUsageCount > 0 && activeSessions >= voucher.maxUsageCount) {
+  if (activeSessions >= deviceLimit) {
     return { success: false, message: 'الكود مستخدم حالياً — الحد الأقصى وصل' }
   }
 
@@ -206,7 +226,7 @@ export async function handlePortalLogin(body: {
   // (والجلسة تتقفل بالتايم آوت بعد 30 دقيقة صمت) أي جهاز تاني يفتح نفس الكود.
   // دلوقتي: الكرت المتفعل بيرجع لصاحبه بس (نفس الـ MAC يستكمل وقته المتبقي)
   // وأي جهاز جديد مرفوض نهائياً مهما كان وضع الجلسات.
-  if (voucher.maxUsageCount > 0 && voucher.usageCount >= voucher.maxUsageCount) {
+  if (voucher.usageCount >= deviceLimit) {
     const sameMacBefore = await prisma.session.count({
       where: { voucherId: voucher.id, macAddress: mac },
     })
@@ -214,29 +234,62 @@ export async function handlePortalLogin(body: {
       return { success: false, message: 'هذا الكود مستخدم من قبل — الكود يعمل على جهاز واحد فقط' }
   }
 
-  // -- أنشئ جلسة جديدة -------------------------------------------------------
-  const session = await prisma.session.create({
-    data: {
-      macAddress:  mac,
-      ipAddress:   ip,
-      hostname:    hostname || null,
-      deviceId:    device.id,
-      voucherId:   voucher.id,
-      startedAt:   now,
-      lastPingAt:  now,
-    },
-  })
+  // -- أنشئ جلسة جديدة + فعّل الكرت (ذرّية: الاتنين مع بعض أو ولا حاجة) ──
+  // قبل كده الجلسة كانت بتتعمل الأول وتحديث الكرت بعدها — لو التحديث فشل
+  // (خطأ لحظي) الكرت كان يفضل UNUSED وusageCount=0 رغم إن جلسة شغالة
+  // عليه → أي جهاز تاني يقدر يفعله تاني = مشاركة كود (حصل فعلاً)
+  let session
+  try {
+    session = await prisma.$transaction(async (tx) => {
+      // إعادة فحص داخل المعاملة ضد السباق (جهازين بيحاولوا في نفس اللحظة)
+      const fresh = await tx.voucher.findUnique({ where: { id: voucher.id } })
+      if (!fresh) throw new Error('VS_GONE')
+      if (fresh.status === 'DISABLED') throw new Error('VS_DISABLED')
+      if (fresh.status === 'EXPIRED' || fresh.status === 'DEPLETED') throw new Error('VS_DEPLETED')
+      const lim = Math.max(1, fresh.maxUsageCount || 0)
+      if ((fresh.usageCount || 0) >= lim) {
+        const same = await tx.session.count({ where: { voucherId: fresh.id, macAddress: mac } })
+        if (same === 0) throw new Error('VS_DEVICE_LOCK')
+      }
+      const actives = await tx.session.count({ where: { voucherId: fresh.id, status: 'ACTIVE' } })
+      if (actives >= lim) throw new Error('VS_CONCURRENT')
 
-  await prisma.voucher.update({
-    where: { id: voucher.id },
-    data: {
-      status:     'ACTIVE',
-      usedAt:     voucher.usedAt || now,
-      // usageCount = عدد الأجهزة اللي فعلت الكرت فعلاً — الاستكمال بنفس MAC مش بيزوده
-      usageCount: voucher.usedAt ? undefined : { increment: 1 },
-      deviceId:   voucher.deviceId || device.id,
-    },
-  })
+      const s = await tx.session.create({
+        data: {
+          macAddress:  mac,
+          ipAddress:   ip,
+          hostname:    hostname || null,
+          deviceId:    device.id,
+          voucherId:   voucher.id,
+          startedAt:   now,
+          lastPingAt:  now,
+        },
+      })
+
+      await tx.voucher.update({
+        where: { id: voucher.id },
+        data: {
+          status:     'ACTIVE',
+          usedAt:     fresh.usedAt || now,
+          // usageCount = عدد الأجهزة اللي فعلت الكرت فعلاً — الاستكمال بنفس MAC مش بيزوده
+          usageCount: fresh.usedAt ? undefined : { increment: 1 },
+          deviceId:   fresh.deviceId || device.id,
+        },
+      })
+      return s
+    })
+  } catch (e: any) {
+    const m = e?.message || ''
+    if (m === 'VS_DEVICE_LOCK')
+      return { success: false, message: 'هذا الكود مستخدم من قبل — الكود يعمل على جهاز واحد فقط' }
+    if (m === 'VS_CONCURRENT')
+      return { success: false, message: 'الكود مستخدم حالياً — الحد الأقصى وصل' }
+    if (m === 'VS_DISABLED')
+      return { success: false, message: '⛔ هذا الكرت موقوف من الإدارة — اطلب كرت جديد' }
+    if (m === 'VS_DEPLETED' || m === 'VS_GONE')
+      return { success: false, message: 'هذا الكود منتهي الصلاحية' }
+    throw e
+  }
 
   return {
     success:     true,

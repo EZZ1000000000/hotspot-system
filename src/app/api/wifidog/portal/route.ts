@@ -3,49 +3,44 @@ import { prisma } from '@/lib/prisma'
 
 export const dynamic = 'force-dynamic'
 
+// البورتال اللي الراوتر بيوجهله أي عميل بيحاول يتصفح
+//
+// ── إصلاح أمني 2026-10-26: قفل باب «ركوب الجلسات» ──────────────────
+// الفحص القديم كان بيدوّر على أي جلسة ACTIVE بالـ IP، ولو مفيش بآخر
+// جلسة على الجهاز في آخر 5 دقايق. النتيجة كانت كارثة:
+//   • أي عميل جديد نفس الـ IP الداخلي (بيتكرر مع DHCP على طول الوقت)
+//     كان بيركب على جلسة عميل تاني — من غير أي كود!
+//   • أي حد يفتح البورتال خلال 5 دقايق بعد أي دخول ناجح كان بياخد
+//     توكن آخر واحد دخل — برضه من غير أي كود!
+// ده كان سبب بلاغ المالك: «أي حد يكتب أي رقم ويفتح — الكود مش لمرة واحدة»
+//
+// دلوقتي: الاستكمال بالـ MAC فقط وعلى نفس الجهاز — نفس الموبايل اللي
+// فتح الكرت بيرجع لنفس جلسته، وأي جهاز جديد بياخد صفحة تسجيل الدخول
+// العادية زي أي عميل جديد تماماً.
 export async function GET(req: NextRequest) {
   const params = new URL(req.url).searchParams
   const serverUrl = process.env.NEXT_PUBLIC_SERVER_URL || new URL(req.url).origin
 
   const mac  = params.get('mac')   || ''
   const gwId = params.get('gw_id') || ''
-  const ip   = params.get('ip')    || ''
 
+  // نحدد الجهاز من gw_id (مع إصلاح ذاتي لو الراوتر ماسك هوية قديمة
+  // بعد التحويل — نفس منطق login-handler)
+  let device = gwId
+    ? await prisma.device.findUnique({ where: { gatewayId: gwId } }).catch(() => null)
+    : null
+  if (!device && gwId) {
+    const actives = await prisma.device.findMany({ where: { isActive: true }, take: 2 })
+    if (actives.length === 1) device = actives[0]
+  }
+
+  // استكمال الجلسة بالـ MAC فقط — ولسانه على نفس الجهاز اللي فتح الكرت
   let session = null
-
-  // دور على session نشطة بالـ MAC
-  if (mac) {
+  if (mac && device) {
     session = await prisma.session.findFirst({
-      where: { macAddress: mac, status: 'ACTIVE' },
-      orderBy: { startedAt: 'desc' },
+      where: { macAddress: mac, status: 'ACTIVE', deviceId: device.id },
+      orderBy: { lastPingAt: 'desc' },
     }).catch(() => null)
-  }
-
-  // لو مفيش بالـ MAC، دور بالـ IP
-  if (!session && ip) {
-    session = await prisma.session.findFirst({
-      where: { ipAddress: ip, status: 'ACTIVE' },
-      orderBy: { startedAt: 'desc' },
-    }).catch(() => null)
-  }
-
-  // لو مفيش بالـ IP، دور بآخر session على الجهاز
-  if (!session && gwId) {
-    const device = await prisma.device.findUnique({
-      where: { gatewayId: gwId },
-    }).catch(() => null)
-
-    if (device) {
-      session = await prisma.session.findFirst({
-        where: {
-          deviceId: device.id,
-          status: 'ACTIVE',
-          // آخر session اتعملت في آخر 5 دقايق
-          startedAt: { gte: new Date(Date.now() - 5 * 60 * 1000) },
-        },
-        orderBy: { startedAt: 'desc' },
-      }).catch(() => null)
-    }
   }
 
   if (session?.token) {
@@ -74,7 +69,7 @@ export async function GET(req: NextRequest) {
     })
   }
 
-  // مفيش session — وجّهه للـ portal (HTML خالص = سريع جداً)
+  // مفيش جلسة — وجّهه للـ portal (صفحة تسجيل الدخول العادي) (HTML خالص = سريع جداً)
   const portalUrl = new URL('/api/portal/page', serverUrl)
   params.forEach((v, k) => portalUrl.searchParams.set(k, v))
   return Response.redirect(portalUrl.toString(), 302)
