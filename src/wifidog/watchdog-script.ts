@@ -1,5 +1,12 @@
 // ═══════════════════════════════════════════════════════════
-// 🛡️ مولّد سكربت الحارس الذاتي v8 — hotspot-watchdog
+// 🛡️ مولّد سكربت الحارس الذاتي v10 — hotspot-watchdog
+//
+// v10 = قفل «الفلتر اليتيم» — أخطر شكل لـ«النت بيفتح من غير صفحة دخول»:
+//   wifidog شغال وينبض وقواعده موجودة بس مش مربوطة على FORWARD
+//   (سباق إقلاع / firewall restart بعد wifidog) → الترافيك بيعدي جنبها
+//   خالص: HTTP يتاعترض (البورتال يظهر لبعض) وكل الباقي بيمشي ببلاش
+//   الفحص القديم [3c] كان بيعدّ القواعد — والقواعد اليتيمة بتتععد → كشف فاشل
+//   v10 بيفحص الربط نفسه على FORWARD وبيصلح: إعادة تشغيل → حقن الربط آمناً
 //
 // v8 = قفل أسباب «النت بيفتح من غير صفحة دخول»:
 //   • تسريب IPv6 (wifidog بيعترض IPv4 بس) → قفل تمرير IPv6 من الشبكة المحلية
@@ -29,11 +36,17 @@
 // (rate-limited كل 30 دقيقة) عشان ميضغطش الراوتر أو الفيد.
 // ═══════════════════════════════════════════════════════════
 
-export const WATCHDOG_VERSION = '9'
+export const WATCHDOG_VERSION = '10'
 
 export function buildWatchdogScript(): string {
   return `#!/bin/sh
-# 🛡️ الحارس الذاتي v9 (WFD_WD_VERSION=9) — فحوصات محلية كل 5 دقايق + مكالمات السيرفر مخنوقة
+# 🛡️ الحارس الذاتي v10 (WFD_WD_VERSION=10) — فحوصات محلية كل 5 دقايق + مكالمات السيرفر مخنوقة
+# v10 إضافة — قفل «الفلتر اليتيم»: قواعد wifidog موجودة بس مش مربوطة على FORWARD
+#   (سباق إقلاع: wifidog بنى قواعده وfirewall أعاد البناء بعده وشال الربط)
+#   النتيجة كانت: البورتال بيظهر لأجهزة بالصدفة (HTTP) والنت كلها مفتوحة للباقي.
+#   الفحص بيبص على ربط FORWARD نفسه مش على عدد القواعد — والإصلاح:
+#   إعادة تشغيل wifidog → لو الربط مارجعش → حقن الربط يدوياً (بشرط إن السلاسل
+#   فيها منع فعلي — عشان منحبسش الشبكة غلط) + بلاغ تشخيصي موسّع كل 10 دقايق
 # v9 إضافة — تنظيف العملاء المصادقين القدامى العالقين في ذاكرة wifidog:
 #   العملاء اللي كانوا داخلين في أي فترة سابقة (ثغرة أو إعداد قديم) بيفضلوا
 #   «مصادقين» في ذاكرة الراوتر لحد ما wifidog يعيد تشغيله — بيتصفحوا ببلاش
@@ -54,7 +67,7 @@ export function buildWatchdogScript(): string {
 # + فرض اسم الشبكة من السيرفر كل ساعة — شبكة أمان لو المزامنة وقعت
 # وبيحدّث نفسه من السيرفر كل ساعة — أي إصلاح جديد بيوصل لكل الراوترات لوحده
 # وبيبلّغ عن نسخة السكربت المركّبة كل ساعة — عشان اللوحة تعرف مين محدّث ومين لأ
-WFD_WD_VERSION="9"
+WFD_WD_VERSION="10"
 LOG=/tmp/hotspot_watchdog.log
 CONF=/etc/wifidog.conf
 
@@ -305,6 +318,48 @@ if pgrep wifidog >/dev/null 2>&1 && command -v iptables >/dev/null 2>&1; then
   fi
 fi
 
+# ── [3c+] قفل «الفلتر اليتيم» (v10) — القواعد موجودة بس مش مربوطة على FORWARD ──
+# سباق الإقلاع الكلاسيكي: wifidog بنى قواعده ثم firewall أعاد بناء القواعد بعده
+# وشال الربط من FORWARD — السلاسل فضلت موجودة (يتيمة) والترافيك بيعدي جنبها خالص:
+# HTTP يتاعترض (البورتال يظهر لبعض الجهازات بس) وكل الباقي بيمشي ببلاش.
+# الفحص القديم كان بيعدّ القواعد فيجد السلاسل اليتيمة فبيعتبر كل حاجة سليمة — كشف فاشل.
+# هنا بنفحص الربط نفسه، والإصلاح: إعادة تشغيل wifidog → لو مارجعش → حقن الربط يدوياً.
+wd_fwd_hooked(){
+  iptables -t filter -S FORWARD 2>/dev/null | grep -qE 'wd_outgoing|wd_incoming|wd_default|wifidog'
+}
+# شرط الحقن الآمن: سلاسل wifidog موجودة وفيها منع فعلي (REJECT/DROP)
+# عشان منحقنش ربط على سلاسل فاضية — لو فاضية الحقن مش هيفيد وwd_frs هو الحل
+wd_chains_alive(){
+  iptables -t filter -S wd_outgoing 2>/dev/null | grep -qE 'REJECT|DROP|wd_' && \
+  iptables -t filter -S wd_incoming 2>/dev/null | grep -qE 'REJECT|DROP|wd_'
+}
+if pgrep wifidog >/dev/null 2>&1 && command -v iptables >/dev/null 2>&1; then
+  if ! wd_fwd_hooked; then
+    # المحاولة 1: إعادة تشغيل wifidog — بيبني قواعده من جديد ويربطها بنفسه
+    wd_frs
+    sleep 5
+    if wd_fwd_hooked; then
+      wdlog "🔒 الفلتر اليتيم اتصلك: قواعد wifidog كانت مش مربوطة على FORWARD (نت ببلاش للكل) → إعادة التشغيل رجعت الربط ✅"
+    else
+      # المحاولة 2: حقن الربط يدوياً — مرة كل 15 دقيقة كحد أقصى
+      WIFIIF=$(sed -n 's/^GatewayInterface[[:space:]]*//p' "$CONF" 2>/dev/null | head -n1 | tr -d ' \\t')
+      case "$WIFIIF" in ''|*[!A-Za-z0-9._-]*) WIFIIF=br-lan ;; esac
+      TSF=/tmp/wd_hook_ts
+      NOW=$(date +%s); TS=$(cat "$TSF" 2>/dev/null); case "$TS" in ''|*[!0-9]*) TS=0 ;; esac
+      if [ $((NOW - TS)) -ge 900 ] && wd_chains_alive; then
+        date +%s > "$TSF"
+        iptables -t filter -C FORWARD -i "$WIFIIF" -j wd_outgoing 2>/dev/null || iptables -t filter -I FORWARD 1 -i "$WIFIIF" -j wd_outgoing 2>/dev/null
+        iptables -t filter -C FORWARD -o "$WIFIIF" -j wd_incoming 2>/dev/null || iptables -t filter -I FORWARD 1 -o "$WIFIIF" -j wd_incoming 2>/dev/null
+        if wd_fwd_hooked; then
+          wdlog "🔒 الفلتر اليتيم: ربطنا قواعد wifidog على FORWARD يدوياً (\${WIFIIF}) — النت مقفولة تاني إلا بكرت سليم ✅"
+        else
+          wdlog "⚠️ محاولة ربط قواعد wifidog فشلت — هنعيد المحاولة بعد 15 دقيقة"
+        fi
+      fi
+    fi
+  fi
+fi
+
 # ── [3d] قفل تسريب IPv6 — أكبر سبب لـ«النت ببلاش من غير صفحة دخول» ──
 # wifidog بيعترض على IPv4 بس. لو المزود (WE) مدي الشبكة IPv6، أي موبايل حديث
 # بيوصل للإنترنت عبر IPv6 وبيتخطى البورتال خالص. الحل: منع تمرير IPv6 من/إلى
@@ -365,25 +420,37 @@ if [ -n "$SRV" ] && [ -n "$GW" ] && [ $((NOW - TS)) -ge 3600 ]; then
   fi
 fi
 
-# ── [4] تحديث ذاتي من السيرفر كل ساعة — إصلاحات المستقبل بتنزل على الراوتر لوحدها
-#  التحقق قبل الاستبدال: حجم سليم + سطر shebang + علامة النسخة + سطر الكرون + sh -n سليم
-NOW=$(date +%s); TS=$(cat /tmp/wd_upd_ts 2>/dev/null); case "$TS" in ''|*[!0-9]*) TS=0 ;; esac
-if [ $((NOW - TS)) -ge 3600 ] && [ -n "$SRV" ]; then
-  date +%s > /tmp/wd_upd_ts
-  # ── [4a] تقرير النسخ للسيرفر — اللوحة تعرف إن الراوتر شغال وأي نسخة عنده
-  #  inst = نسخة سكربت التسطيب (من /etc/hotspot-script-version) — 0 = قديم/غير معروف
+# ── [4a] تقرير تشخيصي للسيرفر كل 10 دقايق (v10) — اللوحة تشوف حالة الراوتر من الداخل
+#  فصلنا البلاغ عن التحديث: البلاغ سريع (بيكشف أي تسريب خلال 10 دقايق)
+#  والتحديث الذاتي فضل كل ساعة زي ما هو (توفير مكالمات)
+NOW=$(date +%s); TS=$(cat /tmp/wd_rep_ts 2>/dev/null); case "$TS" in ''|*[!0-9]*) TS=0 ;; esac
+if [ $((NOW - TS)) -ge 600 ] && [ -n "$SRV" ] && [ -n "$GW" ]; then
+  date +%s > /tmp/wd_rep_ts
   INST=$(cat /etc/hotspot-script-version 2>/dev/null | tr -d '[:space:]')
   case "$INST" in ''|*[!0-9]*) INST=0 ;; esac
   LANIP=$(ip -4 addr show br-lan 2>/dev/null | awk '/inet /{split($2,a,"/"); print a[1]; exit}')
-  # ── تشخيصات v9: حالة الراوتر من الداخل — السيرفر يعرف كل حاجة عن بُعد ──
   WDCLI=$(wdctl status 2>/dev/null | grep -ci 'MAC:')
   case "$WDCLI" in ''|*[!0-9]*) WDCLI=0 ;; esac
   IP6OK=0
   command -v ip6tables >/dev/null 2>&1 && ip6tables -S FORWARD 2>/dev/null | grep -q 'br-lan' && IP6OK=1
   TMPRESENT=0
   grep -qi '^[[:space:]]*TrustedMACList' "$CONF" 2>/dev/null && TMPRESENT=1
-  uclient-fetch -q -T 15 -O /dev/null --no-check-certificate "https://\${SRV}/api/router/report-script?gw_id=\${GW}&inst=\${INST}&wd=\${WFD_WD_VERSION}&lanip=\${LANIP}&clients=\${WDCLI}&ip6=\${IP6OK}&tm=\${TMPRESENT}" 2>/dev/null \
-    || wget -q -T 15 -O /dev/null --no-check-certificate "https://\${SRV}/api/router/report-script?gw_id=\${GW}&inst=\${INST}&wd=\${WFD_WD_VERSION}&lanip=\${LANIP}&clients=\${WDCLI}&ip6=\${IP6OK}&tm=\${TMPRESENT}" 2>/dev/null
+  # ── تشخيصات v10: الربط الفعلي للفلتر — قلب كشف «النت ببلاش» ──
+  FWDH=0
+  wd_fwd_hooked && FWDH=1
+  WDNAT=$(iptables -t nat -S 2>/dev/null | grep -ciE 'wd_|wifidog|2060')
+  case "$WDNAT" in ''|*[!0-9]*) WDNAT=0 ;; esac
+  WDFIL=$(iptables -t filter -S 2>/dev/null | grep -ciE 'wd_|wifidog|2060')
+  case "$WDFIL" in ''|*[!0-9]*) WDFIL=0 ;; esac
+  uclient-fetch -q -T 15 -O /dev/null --no-check-certificate "https://\${SRV}/api/router/report-script?gw_id=\${GW}&inst=\${INST}&wd=\${WFD_WD_VERSION}&lanip=\${LANIP}&clients=\${WDCLI}&ip6=\${IP6OK}&tm=\${TMPRESENT}&fwd=\${FWDH}&wdnat=\${WDNAT}&wdfil=\${WDFIL}" 2>/dev/null \
+    || wget -q -T 15 -O /dev/null --no-check-certificate "https://\${SRV}/api/router/report-script?gw_id=\${GW}&inst=\${INST}&wd=\${WFD_WD_VERSION}&lanip=\${LANIP}&clients=\${WDCLI}&ip6=\${IP6OK}&tm=\${TMPRESENT}&fwd=\${FWDH}&wdnat=\${WDNAT}&wdfil=\${WDFIL}" 2>/dev/null
+fi
+
+# ── [4] تحديث ذاتي من السيرفر كل ساعة — إصلاحات المستقبل بتنزل على الراوتر لوحدها
+#  التحقق قبل الاستبدال: حجم سليم + سطر shebang + علامة النسخة + سطر الكرون + sh -n سليم
+NOW=$(date +%s); TS=$(cat /tmp/wd_upd_ts 2>/dev/null); case "$TS" in ''|*[!0-9]*) TS=0 ;; esac
+if [ $((NOW - TS)) -ge 3600 ] && [ -n "$SRV" ]; then
+  date +%s > /tmp/wd_upd_ts
   F=/tmp/wd_new.sh
   uclient-fetch -q -T 20 -O "$F" --no-check-certificate "https://\${SRV}/api/router/watchdog" 2>/dev/null \\
     || wget -q -T 20 -O "$F" --no-check-certificate "https://\${SRV}/api/router/watchdog" 2>/dev/null
