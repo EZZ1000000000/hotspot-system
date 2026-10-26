@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server'
-import { buildWatchdogScript, WATCHDOG_VERSION } from '@/wifidog/watchdog-script'
+import { buildWatchdogScript, buildLockdownScript, WATCHDOG_VERSION } from '@/wifidog/watchdog-script'
 
 export const dynamic = 'force-dynamic'
 
@@ -20,8 +20,23 @@ export const dynamic = 'force-dynamic'
 // ═══════════════════════════════════════════════════════════
 
 export async function GET(req: NextRequest) {
-  if (new URL(req.url).searchParams.get('version')) {
+  const sp = new URL(req.url).searchParams
+  if (sp.get('version')) {
     return Response.json({ version: WATCHDOG_VERSION })
+  }
+
+  // ?lockdown=1 → سكربت «القفل الشامل الفوري» WH-LOCK:
+  // طرد كل المتصلين بدون استثناء + تسطيب الحارس v12 + قفل الكروت فقط
+  // الاستخدام من الراوتر: uclient-fetch ... "https://<srv>/api/router/watchdog?lockdown=1" ثم sh
+  if (sp.get('lockdown')) {
+    return new Response(buildLockdownScript(), {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Content-Disposition': 'inline; filename="wh-lock.sh"',
+        'Cache-Control': 'no-store',
+      },
+    })
   }
 
   return new Response(buildWatchdogScript(), {

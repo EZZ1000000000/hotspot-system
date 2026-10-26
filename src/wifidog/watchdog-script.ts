@@ -579,3 +579,200 @@ fi
 exit 0
 `
 }
+
+// ═══════════════════════════════════════════════════════════
+// 🔒 مولّد سكربت «القفل الشامل الفوري» — WH-LOCK
+//
+// طلب الإدارة: سكربت واحد يقفل كل المتصلين (حتى فاتحي الكروت السليمة)
+// بدون استثناء — والدخول بعدها بالكرت فقط.
+//
+// بيتخدم عن بُعد من غير لصق أي حاجة:
+//   uclient-fetch ... "https://<srv>/api/router/watchdog?lockdown=1" → sh
+//
+// الخطوات:
+//   [1] إيقاف الحارس القديم مؤقتاً (فحصه الخاطئ كان بيعيد تشغيل wifidog كل 10 دقايق)
+//   [2] طرد كل المتصلين: إعادة تشغيل wifidog بذاكرة فاضية + قطع الاتصالات المفتوحة
+//   [3] انتظار سلاسل المنع (WiFiDog_<if>_Unknown فيها REJECT) — النظامين مدعومين
+//   [4] ضمان ربط FORWARD (حقن مباشر بلا إعادة تشغيل لو ناقص)
+//   [5] قفل IPv6
+//   [6] تسطيب الحارس v12 المضمّن (نفس نسخة السيرفر بالظبط — مفيش سباق تحديث)
+//   [7] أداة جهاز الإدارة /root/wh_trust.sh (نت دايمة لجهاز واحد من غير كرت)
+//   [8] تشغيل الحارس الجديد فوراً + نتيجة واضحة + بلاغ للسيرفر
+// ═══════════════════════════════════════════════════════════
+
+export function buildLockdownScript(): string {
+  return `#!/bin/sh
+# ═══════════════════════════════════════════════════════════
+# 🔒 القفل الشامل الفوري — WH-LOCK (v1)
+# بيقطع النت على كل المتصلين بدون استثناء (حتى فاتحي الكروت)
+# والدخول بعدها بالكرت فقط عبر صفحة الدخول
+# ═══════════════════════════════════════════════════════════
+LOG=/tmp/hotspot_watchdog.log
+CONF=/etc/wifidog.conf
+say(){ echo "$*"; echo "$(date '+%m-%d %H:%M') [LOCK] $*" >> "$LOG" 2>/dev/null; return 0; }
+
+echo "═══ 🔒 القفل الشامل — بدأ التنفيذ ═══"
+
+GW=$(sed -n 's/^GatewayID[[:space:]]*//p' "$CONF" 2>/dev/null | head -n1 | tr -d ' \\t')
+SRV=$(sed -n 's/.*FirewallRule allow to //p' "$CONF" 2>/dev/null | head -n1 | tr -d ' \\t')
+WIF=$(sed -n 's/^GatewayInterface[[:space:]]*//p' "$CONF" 2>/dev/null | head -n1 | tr -d ' \\t')
+case "$WIF" in ''|*[!A-Za-z0-9._-]*) WIF=br-lan ;; esac
+
+# ── [1] إيقاف الحارس القديم مؤقتاً ──
+# فحصه القديم بيدوّر على 'wifidog' بأحرف صغيرة والسلاسل الفعلية اسمها 'WiFiDog_' —
+# فكان بيظن الربط مقطوع وبيعيد تشغيل wifidog كل 10 دقايق = تطارد الكروت
+for P in $(pgrep -f hotspot-watchdog 2>/dev/null); do kill "$P" 2>/dev/null; done
+if crontab -l 2>/dev/null | grep -q hotspot-watchdog; then
+  crontab -l 2>/dev/null | grep -v hotspot-watchdog | crontab - >/dev/null 2>&1
+fi
+say "الحارس القديم اتوقف مؤقتاً (كان بيعيد تشغيل wifidog كل 10 دقايق بالغلط)"
+
+# ── [2] القفل الشامل: طرد كل المتصلين بدون استثناء ──
+NCLI=$(wdctl status 2>/dev/null | grep -ci 'MAC:')
+case "$NCLI" in ''|*[!0-9]*) NCLI=0 ;; esac
+/etc/init.d/wifidog stop >/dev/null 2>&1
+killall -9 wifidog >/dev/null 2>&1
+sleep 2
+killall -9 wifidog >/dev/null 2>&1
+/etc/init.d/wifidog start >/dev/null 2>&1
+sleep 3
+pgrep wifidog >/dev/null 2>&1 || { wifidog >/dev/null 2>&1 & sleep 3; }
+command -v conntrack >/dev/null 2>&1 && conntrack -F >/dev/null 2>&1
+say "🔒 القفل الشامل: طرد \${NCLI} عميل مصادق (كل المتصلين بدون استثناء) + قطع كل الاتصالات المفتوحة"
+echo "1) القفل الشامل ✅ — طُرد \${NCLI} عميل مصادق والاتصالات المفتوحة اتقطعت"
+
+# ── [3] استنى سلاسل المنع ترجع بعد التشغيل (لحد 36 ثانية) ──
+WCHK=0
+i=0
+while [ $i -lt 12 ]; do
+  sleep 3
+  i=$((i+1))
+  if iptables -t filter -S "WiFiDog_\${WIF}_Unknown" 2>/dev/null | grep -qiE 'REJECT|DROP'; then WCHK=1; break; fi
+  if iptables -t filter -S wd_outgoing 2>/dev/null | grep -qiE 'REJECT|DROP'; then WCHK=1; break; fi
+done
+if [ "$WCHK" = "1" ]; then
+  echo "2) قفل غير المصادقين ✅ — أي جهاز من غير كرت مرفوض فعلياً (REJECT)"
+else
+  echo "2) ⚠️ سلاسل المنع لسه مش ظاهرة — الحارس الجديد هيصلحها أول ما يشتغل"
+fi
+
+# ── [4] ضمان ربط القواعد على FORWARD (حقن مباشر بلا أي إعادة تشغيل) ──
+if iptables -t filter -S FORWARD 2>/dev/null | grep -qiE 'wifidog|wd_'; then
+  echo "3) ربط FORWARD ✅ — قواعد wifidog في مكانها على مسار الترافيك"
+else
+  if iptables -t filter -S "WiFiDog_\${WIF}_Internet" >/dev/null 2>&1; then
+    iptables -t filter -C FORWARD -i "$WIF" -j "WiFiDog_\${WIF}_Internet" 2>/dev/null || \\
+      iptables -t filter -I FORWARD 1 -i "$WIF" -j "WiFiDog_\${WIF}_Internet"
+    echo "3) ربط FORWARD ✅ — اتحقن يدوياً على \${WIF}"
+  else
+    echo "3) ⚠️ ربط FORWARD ناقص — الحارس الجديد هيحقنه تلقائياً"
+  fi
+fi
+
+# ── [5] قفل IPv6 (تسريب كلاسيكي للنت ببلاش) ──
+IP6OK=0
+if command -v ip6tables >/dev/null 2>&1; then
+  ip6tables -C FORWARD -i "$WIF" -j DROP 2>/dev/null || ip6tables -I FORWARD 1 -i "$WIF" -j DROP 2>/dev/null
+  ip6tables -C FORWARD -o "$WIF" -j DROP 2>/dev/null || ip6tables -I FORWARD 1 -o "$WIF" -j DROP 2>/dev/null
+  IP6OK=1
+  echo "4) قفل IPv6 ✅"
+else
+  echo "4) ip6tables مش موجودة — الحارس الجديد هيسطبها ويقفل التسريب لوحده"
+fi
+
+# ── [6] تصفير ملفات الحالة القديمة (مش wd_purge_done — عشان الحارس ميعملش
+# تنظيف تاني كمان شوية يطرد الناس تاني) ──
+rm -f /tmp/wd_frs_ts /tmp/wd_hook_ts 2>/dev/null
+
+# ── [7] تسطيب الحارس v12 (مضمّن هنا — نفس نسخة السيرفر بالظبط) ──
+cat > /usr/bin/.wh_wd12 <<'WD12EOF'
+${buildWatchdogScript()}
+WD12EOF
+WDOK=0
+if [ -s /usr/bin/.wh_wd12 ] && grep -q 'WFD_WD_VERSION="12"' /usr/bin/.wh_wd12 2>/dev/null && sh -n /usr/bin/.wh_wd12 >/dev/null 2>&1; then
+  cp /usr/bin/hotspot-watchdog /usr/bin/hotspot-watchdog.bak 2>/dev/null
+  mv /usr/bin/.wh_wd12 /usr/bin/hotspot-watchdog 2>/dev/null
+  chmod +x /usr/bin/hotspot-watchdog 2>/dev/null
+  WDOK=1
+  echo "5) الحارس v12 اتسطّب ✅ — عمر ما بيعيد تشغيل wifidog والسلاسل حية (القديم محفوظ في .bak)"
+else
+  rm -f /usr/bin/.wh_wd12 2>/dev/null
+  echo "5) ⚠️ فشل تسطيب الحارس الجديد — هيحدّث نفسه من السيرفر خلال ساعة"
+fi
+
+# ── [8] رجّع الكرون + امنع أي تنزيل نسخة قديمة في نفس اللحظة ──
+crontab -l 2>/dev/null | grep -q hotspot-watchdog || {
+  (crontab -l 2>/dev/null | grep -v hotspot-watchdog; echo "*/5 * * * * /usr/bin/hotspot-watchdog >/dev/null 2>&1") | crontab - >/dev/null 2>&1
+}
+/etc/init.d/cron restart >/dev/null 2>&1 || /etc/init.d/crond restart >/dev/null 2>&1
+date +%s > /tmp/wd_upd_ts 2>/dev/null
+date +%s > /tmp/wd_rep_ts 2>/dev/null
+echo "6) الكرون ✅ — الحارس يشتغل كل 5 دقايق (فحص بس — من غير أي إعادة تشغيل غلط)"
+
+# ── [9] أداة جهاز الإدارة (اختياري): نت دايمة لجهازك أنت من غير كرت ──
+cat > /root/wh_trust.sh <<'WTRUSTEOF'
+#!/bin/sh
+# إضافة جهازك للقايمة الموثوقة = نت فورية من غير كرت — لجهازك أنت بس
+# الاستخدام:  sh /root/wh_trust.sh AA:BB:CC:DD:EE:FF
+MAC=$(echo "$1" | tr -d ':.- ' | tr 'a-f' 'A-F')
+if ! echo "$MAC" | grep -qE '^[0-9A-F]{12}$'; then
+  echo "استخدام: sh /root/wh_trust.sh AA:BB:CC:DD:EE:FF   (اكتب عنوان MAC بتاع جهازك)"
+  echo "تلاقيه في: إعدادات الواي فاي → تفاصيل الشبكة → عنوان MAC"
+  exit 1
+fi
+FM=$(echo "$MAC" | sed 's/../&:/g; s/:$//')
+touch /etc/hotspot-trusted-allow
+sed -i '/^[[:space:]]*[Tt]rustedMACList/d' /etc/wifidog.conf 2>/dev/null
+echo "TrustedMACList $FM" >> /etc/wifidog.conf
+/etc/init.d/wifidog restart >/dev/null 2>&1
+echo "✅ الجهاز $FM بقى موثوق — اتصل بالواي فاي وهتلاقي نت مباشرة من غير كرت"
+echo "ملحوظة: ده الجهاز الوحيد المسموح بده — أي جهاز تاني لازم كرت"
+WTRUSTEOF
+chmod +x /root/wh_trust.sh 2>/dev/null
+echo "7) أداة جهاز الإدارة جاهزة: sh /root/wh_trust.sh ماك-جهازك (اختياري)"
+
+# ── [10] شغّل الحارس الجديد مرة واحدة دلوقتي (تحقق فوري + أول بلاغ) ──
+if [ "$WDOK" = "1" ]; then
+  sh /usr/bin/hotspot-watchdog >/dev/null 2>&1
+fi
+
+# ── [11] النتيجة النهائية ──
+WDPID=$(pgrep wifidog 2>/dev/null | head -n1)
+NCLI2=$(wdctl status 2>/dev/null | grep -ci 'MAC:')
+case "$NCLI2" in ''|*[!0-9]*) NCLI2=0 ;; esac
+FWD=0
+iptables -t filter -S FORWARD 2>/dev/null | grep -qiE 'wifidog|wd_' && FWD=1
+BLK=0
+iptables -t filter -S "WiFiDog_\${WIF}_Unknown" 2>/dev/null | grep -qiE 'REJECT|DROP' && BLK=1
+if [ "$BLK" = "0" ]; then
+  iptables -t filter -S wd_outgoing 2>/dev/null | grep -qiE 'REJECT|DROP' && BLK=1
+fi
+echo "══════════════════════════════════════"
+echo "📊 النتيجة النهائية — القفل الشامل:"
+echo "   1) wifidog شغال (PID \${WDPID}) — العملاء في الذاكرة: \${NCLI2} (صفر = الكل اتطردوا ✅)"
+echo "   2) قفل غير المصادقين: $( [ \"$BLK\" = \"1\" ] && echo 'شغال ✅ REJECT فعلي' || echo '⚠️ شغل السكربت تاني بعد دقيقة' )"
+echo "   3) ربط القواعد على FORWARD: $( [ \"$FWD\" = \"1\" ] && echo 'موجود ✅' || echo '⚠️ الحارس هيصلحه في دقايق' )"
+echo "   4) قفل IPv6: $( [ \"$IP6OK\" = \"1\" ] && echo 'شغال ✅' || echo 'الحارس هيقفه تلقائياً' )"
+echo "   5) الحارس: v12 — مفيش إعادة تشغيل غلط تاني ✅"
+echo "══════════════════════════════════════"
+echo "🧪 جرّب بموبايل: اتصل بالواي فاي → افتح المتصفح → صفحة الكرت → كود سليم → النت يفتح"
+echo "🚫 أي جهاز من غير كرت: مقفول خالص (واتساب/يوتيوب/تيك توك — كل حاجة)"
+echo "👤 نت جهازك أنت من غير كرت: sh /root/wh_trust.sh ماك-جهازك"
+echo "══════════════════════════════════════"
+
+# ── [12] بلاغ فوري للسيرفر ──
+INST=$(cat /etc/hotspot-script-version 2>/dev/null | tr -d '[:space:]')
+case "$INST" in ''|*[!0-9]*) INST=0 ;; esac
+LANIP=$(ip -4 addr show "$WIF" 2>/dev/null | awk '/inet /{split($2,a,"/"); print a[1]; exit}')
+if [ -n "$SRV" ] && [ -n "$GW" ]; then
+  REPURL="https://\${SRV}/api/router/report-script?gw_id=\${GW}&inst=\${INST}&wd=12&lanip=\${LANIP}&clients=\${NCLI2}&ip6=\${IP6OK}&tm=0&fwd=\${FWD}&wdnat=0&wdfil=0"
+  RESP=$(uclient-fetch -q -T 15 -O - --no-check-certificate "$REPURL" 2>/dev/null | head -n1)
+  [ -z "$RESP" ] && RESP=$(wget -q -T 15 -O - --no-check-certificate "$REPURL" 2>/dev/null | head -n1)
+  say "بلاغ القفل الشامل وصل السيرفر: \${RESP:-فشل الاتصال}"
+fi
+
+echo "═══ خلص ✅ — التفاصيل في /tmp/hotspot_watchdog.log ═══"
+# WH_LOCK_END_MARKER
+exit 0
+`
+}
