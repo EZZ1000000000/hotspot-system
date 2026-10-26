@@ -36,11 +36,11 @@
 // (rate-limited كل 30 دقيقة) عشان ميضغطش الراوتر أو الفيد.
 // ═══════════════════════════════════════════════════════════
 
-export const WATCHDOG_VERSION = '10'
+export const WATCHDOG_VERSION = '11'
 
 export function buildWatchdogScript(): string {
   return `#!/bin/sh
-# 🛡️ الحارس الذاتي v10 (WFD_WD_VERSION=10) — فحوصات محلية كل 5 دقايق + مكالمات السيرفر مخنوقة
+# 🛡️ الحارس الذاتي v11 (WFD_WD_VERSION=11) — فحوصات محلية كل 5 دقايق + مكالمات السيرفر مخنوقة
 # v10 إضافة — قفل «الفلتر اليتيم»: قواعد wifidog موجودة بس مش مربوطة على FORWARD
 #   (سباق إقلاع: wifidog بنى قواعده وfirewall أعاد البناء بعده وشال الربط)
 #   النتيجة كانت: البورتال بيظهر لأجهزة بالصدفة (HTTP) والنت كلها مفتوحة للباقي.
@@ -67,7 +67,7 @@ export function buildWatchdogScript(): string {
 # + فرض اسم الشبكة من السيرفر كل ساعة — شبكة أمان لو المزامنة وقعت
 # وبيحدّث نفسه من السيرفر كل ساعة — أي إصلاح جديد بيوصل لكل الراوترات لوحده
 # وبيبلّغ عن نسخة السكربت المركّبة كل ساعة — عشان اللوحة تعرف مين محدّث ومين لأ
-WFD_WD_VERSION="10"
+WFD_WD_VERSION="11"
 LOG=/tmp/hotspot_watchdog.log
 CONF=/etc/wifidog.conf
 
@@ -323,7 +323,8 @@ fi
 # وشال الربط من FORWARD — السلاسل فضلت موجودة (يتيمة) والترافيك بيعدي جنبها خالص:
 # HTTP يتاعترض (البورتال يظهر لبعض الجهازات بس) وكل الباقي بيمشي ببلاش.
 # الفحص القديم كان بيعدّ القواعد فيجد السلاسل اليتيمة فبيعتبر كل حاجة سليمة — كشف فاشل.
-# هنا بنفحص الربط نفسه، والإصلاح: إعادة تشغيل wifidog → لو مارجعش → حقن الربط يدوياً.
+# هنا بنفحص الربط نفسه. الإصلاح v11: حقن مباشر على FORWARD لو السلاسل حية (بلا أي إزعاج)،
+# وإعادة تشغيل wifidog بس لو السلاسل نفسها ناقصة — عشان مندخلش في حلقة إعادة تشغيل بتحرق الحقن.
 wd_fwd_hooked(){
   iptables -t filter -S FORWARD 2>/dev/null | grep -qE 'wd_outgoing|wd_incoming|wd_default|wifidog'
 }
@@ -333,28 +334,50 @@ wd_chains_alive(){
   iptables -t filter -S wd_outgoing 2>/dev/null | grep -qE 'REJECT|DROP|wd_' && \
   iptables -t filter -S wd_incoming 2>/dev/null | grep -qE 'REJECT|DROP|wd_'
 }
+# حقن الربط على FORWARD — بيقري واجهة البوابة من wifidog.conf ويربط سلاسل wifidog
+wd_hook_fwd(){
+  WIFIIF=$(sed -n 's/^GatewayInterface[[:space:]]*//p' "$CONF" 2>/dev/null | head -n1 | tr -d ' \\t')
+  case "$WIFIIF" in ''|*[!A-Za-z0-9._-]*) WIFIIF=br-lan ;; esac
+  iptables -t filter -C FORWARD -i "$WIFIIF" -j wd_outgoing 2>/dev/null || iptables -t filter -I FORWARD 1 -i "$WIFIIF" -j wd_outgoing
+  iptables -t filter -C FORWARD -o "$WIFIIF" -j wd_incoming 2>/dev/null || iptables -t filter -I FORWARD 1 -o "$WIFIIF" -j wd_incoming
+}
 if pgrep wifidog >/dev/null 2>&1 && command -v iptables >/dev/null 2>&1; then
   if ! wd_fwd_hooked; then
-    # المحاولة 1: إعادة تشغيل wifidog — بيبني قواعده من جديد ويربطها بنفسه
-    wd_frs
-    sleep 5
-    if wd_fwd_hooked; then
-      wdlog "🔒 الفلتر اليتيم اتصلك: قواعد wifidog كانت مش مربوطة على FORWARD (نت ببلاش للكل) → إعادة التشغيل رجعت الربط ✅"
-    else
-      # المحاولة 2: حقن الربط يدوياً — مرة كل 15 دقيقة كحد أقصى
-      WIFIIF=$(sed -n 's/^GatewayInterface[[:space:]]*//p' "$CONF" 2>/dev/null | head -n1 | tr -d ' \\t')
-      case "$WIFIIF" in ''|*[!A-Za-z0-9._-]*) WIFIIF=br-lan ;; esac
-      TSF=/tmp/wd_hook_ts
-      NOW=$(date +%s); TS=$(cat "$TSF" 2>/dev/null); case "$TS" in ''|*[!0-9]*) TS=0 ;; esac
-      if [ $((NOW - TS)) -ge 900 ] && wd_chains_alive; then
+    TSF=/tmp/wd_hook_ts
+    NOW=$(date +%s); TS=$(cat "$TSF" 2>/dev/null); case "$TS" in ''|*[!0-9]*) TS=0 ;; esac
+    if wd_chains_alive; then
+      # المحاولة 1 (الأسرع وبلا أي إزعاج): السلاسل حية → حقن مباشر بلا إعادة تشغيل
+      # ده بيمنع حلقة إعادة تشغيل wifidog كل 5 دقايق اللي كانت بتمسح الحقن نفسه
+      if [ $((NOW - TS)) -ge 900 ]; then
         date +%s > "$TSF"
-        iptables -t filter -C FORWARD -i "$WIFIIF" -j wd_outgoing 2>/dev/null || iptables -t filter -I FORWARD 1 -i "$WIFIIF" -j wd_outgoing 2>/dev/null
-        iptables -t filter -C FORWARD -o "$WIFIIF" -j wd_incoming 2>/dev/null || iptables -t filter -I FORWARD 1 -o "$WIFIIF" -j wd_incoming 2>/dev/null
+        wd_hook_fwd
         if wd_fwd_hooked; then
-          wdlog "🔒 الفلتر اليتيم: ربطنا قواعد wifidog على FORWARD يدوياً (\${WIFIIF}) — النت مقفولة تاني إلا بكرت سليم ✅"
+          wdlog "🔒 الفلتر اليتيم اتصلك: ربطنا قواعد wifidog على FORWARD مباشرة (\${WIFIIF}) — النت مقفول إلا بكروت سليمة ✅"
         else
-          wdlog "⚠️ محاولة ربط قواعد wifidog فشلت — هنعيد المحاولة بعد 15 دقيقة"
+          wdlog "⚠️ حقن ربط FORWARD فشل — هنعيد المحاولة بعد 15 دقيقة"
         fi
+      fi
+    else
+      # المحاولة 2: سلاسل wifidog نفسها ناقصة → إعادة تشغيل (مرة كل 10 دقايق كحد أقصى)
+      TSF2=/tmp/wd_frs_ts
+      NOW=$(date +%s); TS2=$(cat "$TSF2" 2>/dev/null); case "$TS2" in ''|*[!0-9]*) TS2=0 ;; esac
+      if [ $((NOW - TS2)) -ge 600 ]; then
+        date +%s > "$TSF2"
+        wd_frs
+        N=0
+        while [ $N -lt 6 ]; do
+          sleep 5
+          N=$((N+1))
+          if wd_chains_alive; then
+            wd_hook_fwd
+            if wd_fwd_hooked; then
+              wdlog "🔒 الفلتر اليتيم: إعادة تشغيل wifidog + ربط FORWARD (\${WIFIIF}) بعد انتظار \${N}×5 ثانية ✅"
+            else
+              wdlog "⚠️ ربط FORWARD فشل بعد إعادة التشغيل — هنعيد المحاولة"
+            fi
+            break
+          fi
+        done
       fi
     fi
   fi
