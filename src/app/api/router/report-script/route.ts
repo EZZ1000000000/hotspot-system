@@ -84,6 +84,28 @@ async function record(req: NextRequest) {
       update: { value },
       create: { key: `script-report:${gwId}`, value },
     })
+
+    // ── قناة الأوامر الفورية (v10): لو الإدارة حطت أمر طوارئ للجهاز ده نرجّعه مع الرد ──
+    // force-purge:<gw> = "1" → الراوتر بيعيد تشغيل wifidog فوراً (غسل كل المصادقين العالقين)
+    // ده الزر اللي بيقطع «النت ببلاش» من غير SSH — بعد القراءة الأمر بينتمس (مرة واحدة)
+    let reply = 'OK'
+    try {
+      const cmd = await prisma.keyValueStore.findUnique({
+        where: { key: `force-purge:${gwId}` },
+      })
+      if (cmd?.value === '1') {
+        reply = 'PURGE'
+        await prisma.keyValueStore
+          .delete({ where: { key: `force-purge:${gwId}` } })
+          .catch(() => {})
+      }
+    } catch {
+      // أي خطأ في قراءة الأمر → رد عادي — البلاغ أهم
+    }
+    return new Response(reply, {
+      status: 200,
+      headers: { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' },
+    })
   } catch {
     // أي خطأ → نتجاهل — الراوتر هيحاول تاني في الدورة الجاية
   }

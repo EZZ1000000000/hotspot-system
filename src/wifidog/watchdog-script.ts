@@ -442,8 +442,17 @@ if [ $((NOW - TS)) -ge 600 ] && [ -n "$SRV" ] && [ -n "$GW" ]; then
   case "$WDNAT" in ''|*[!0-9]*) WDNAT=0 ;; esac
   WDFIL=$(iptables -t filter -S 2>/dev/null | grep -ciE 'wd_|wifidog|2060')
   case "$WDFIL" in ''|*[!0-9]*) WDFIL=0 ;; esac
-  uclient-fetch -q -T 15 -O /dev/null --no-check-certificate "https://\${SRV}/api/router/report-script?gw_id=\${GW}&inst=\${INST}&wd=\${WFD_WD_VERSION}&lanip=\${LANIP}&clients=\${WDCLI}&ip6=\${IP6OK}&tm=\${TMPRESENT}&fwd=\${FWDH}&wdnat=\${WDNAT}&wdfil=\${WDFIL}" 2>/dev/null \
-    || wget -q -T 15 -O /dev/null --no-check-certificate "https://\${SRV}/api/router/report-script?gw_id=\${GW}&inst=\${INST}&wd=\${WFD_WD_VERSION}&lanip=\${LANIP}&clients=\${WDCLI}&ip6=\${IP6OK}&tm=\${TMPRESENT}&fwd=\${FWDH}&wdnat=\${WDNAT}&wdfil=\${WDFIL}" 2>/dev/null
+  # الرد من السيرفر: OK = كله سليم | PURGE = أمر طوارئ من الإدارة → غسل كامل للذاكرة
+  REPURL="https://\${SRV}/api/router/report-script?gw_id=\${GW}&inst=\${INST}&wd=\${WFD_WD_VERSION}&lanip=\${LANIP}&clients=\${WDCLI}&ip6=\${IP6OK}&tm=\${TMPRESENT}&fwd=\${FWDH}&wdnat=\${WDNAT}&wdfil=\${WDFIL}"
+  RESP=$(uclient-fetch -q -T 15 -O - --no-check-certificate "$REPURL" 2>/dev/null | head -n1)
+  [ -z "$RESP" ] && RESP=$(wget -q -T 15 -O - --no-check-certificate "$REPURL" 2>/dev/null | head -n1)
+  case "$RESP" in ""|OK*) : ;;
+    *PURGE*)
+      wdlog "🚨 أمر إدارة: غسل كامل لذاكرة wifidog (طرد كل المصادقين) — المشتركين بكرت سليم هيدخلوا الكود تاني"
+      wd_frs
+      wdlog "🚨 الغسل اتنفذ — wifidog اتعاد تشغيله بقائمة عملاء فاضية"
+    ;;
+  esac
 fi
 
 # ── [4] تحديث ذاتي من السيرفر كل ساعة — إصلاحات المستقبل بتنزل على الراوتر لوحدها
