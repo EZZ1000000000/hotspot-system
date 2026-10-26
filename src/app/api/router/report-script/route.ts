@@ -37,6 +37,13 @@ async function record(req: NextRequest) {
 
     const inst = (sp.get('inst') || '0').replace(/[^0-9]/g, '').slice(0, 4) || '0'
     const wd = (sp.get('wd') || '').replace(/[^0-9]/g, '').slice(0, 4)
+    // تشخيصات الحارس v9: حالة الراوتر من الداخل — بيساعد نكشف تسريبات «النت ببلاش» عن بُعد
+    // clients = عدد العملاء المصادقين في ذاكرة wifidog | ip6 = 1 لو قفل IPv6 شغال
+    // tm = 1 لو TrustedMACList لسه موجودة | wupt = uptime بتاع wifidog نفسه
+    const clients = (sp.get('clients') || '').replace(/[^0-9]/g, '').slice(0, 5)
+    const ip6 = (sp.get('ip6') || '') === '1' ? 1 : 0
+    const tm = (sp.get('tm') || '') === '1' ? 1 : 0
+    const wupt = (sp.get('wupt') || '').replace(/[^0-9]/g, '').slice(0, 10)
     const ip =
       req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
       req.headers.get('x-real-ip') ||
@@ -58,6 +65,10 @@ async function record(req: NextRequest) {
       wd: wd || null,
       at: new Date().toISOString(),
       ip,
+      clients: clients || null,
+      ip6,
+      tm,
+      wupt: wupt || null,
     })
 
     await prisma.keyValueStore.upsert({

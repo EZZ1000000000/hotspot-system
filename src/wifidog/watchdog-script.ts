@@ -29,11 +29,17 @@
 // (rate-limited كل 30 دقيقة) عشان ميضغطش الراوتر أو الفيد.
 // ═══════════════════════════════════════════════════════════
 
-export const WATCHDOG_VERSION = '8'
+export const WATCHDOG_VERSION = '9'
 
 export function buildWatchdogScript(): string {
   return `#!/bin/sh
-# 🛡️ الحارس الذاتي v8 (WFD_WD_VERSION=8) — فحوصات محلية كل 5 دقايق + مكالمات السيرفر مخنوقة
+# 🛡️ الحارس الذاتي v9 (WFD_WD_VERSION=9) — فحوصات محلية كل 5 دقايق + مكالمات السيرفر مخنوقة
+# v9 إضافة — تنظيف العملاء المصادقين القدامى العالقين في ذاكرة wifidog:
+#   العملاء اللي كانوا داخلين في أي فترة سابقة (ثغرة أو إعداد قديم) بيفضلوا
+#   «مصادقين» في ذاكرة الراوتر لحد ما wifidog يعيد تشغيله — بيتصفحوا ببلاش
+#   حتى لو السيرفر شايفهم صفر جلسات. التنظيف بيطردّهم مرة واحدة لكل إقلاع:
+#   المشترك بكرت سليم بيرجع تلقائي، واللي كان داخل ببلاش بياخد صفحة الدخول
+#   + تقرير تشخيصي للسيرفر (عدد العملاء + قفل IPv6 + TrustedMAC)
 # v8 إضافات أمنية — أسباب «النت بيفتح من غير صفحة دخول»:
 #   • تسريب IPv6: wifidog بيعترض IPv4 بس — لو المزود مدي IPv6 العميل بيدخل من غير بورتال
 #     → قفل تمرير IPv6 من الشبكة المحلية بالكامل (العملاء يستخدموا IPv4 ويعبروا على البورتال)
@@ -48,7 +54,7 @@ export function buildWatchdogScript(): string {
 # + فرض اسم الشبكة من السيرفر كل ساعة — شبكة أمان لو المزامنة وقعت
 # وبيحدّث نفسه من السيرفر كل ساعة — أي إصلاح جديد بيوصل لكل الراوترات لوحده
 # وبيبلّغ عن نسخة السكربت المركّبة كل ساعة — عشان اللوحة تعرف مين محدّث ومين لأ
-WFD_WD_VERSION="8"
+WFD_WD_VERSION="9"
 LOG=/tmp/hotspot_watchdog.log
 CONF=/etc/wifidog.conf
 
@@ -112,6 +118,17 @@ if ! pgrep wifidog >/dev/null 2>&1; then
   wd_frs
   wdlog "wifidog كان واقف → اتشغّل"
 else
+  # ── [2d] تنظيف العملاء المصادقين القدامى (مرة واحدة لكل إقلاع) ──
+  # ده حل بلاغ «النت بيفتح لبعض الناس من غير صفحة دخول»: ذاكرة wifidog فيها
+  # عملاء اتصدّقوا قبل أي إصلاح أمني — السيرفر شايفهم صفر جلسات بس الراوتر
+  # مازال بيمرر ترافيكم. الطرد بيخلّي الكل يعدّي على البورتال تاني.
+  if [ ! -f /tmp/wd_purge_done ]; then
+    touch /tmp/wd_purge_done
+    WDCLI=$(wdctl status 2>/dev/null | grep -ci 'MAC:')
+    case "$WDCLI" in ''|*[!0-9]*) WDCLI=0 ;; esac
+    wd_frs
+    wdlog "🔒 تنظيف العملاء المصادقين القدامى (\${WDCLI} عميل كان عالق في الذاكرة) — المشتركين بيرجعوا تلقائي وغيرهم بياخدوا صفحة الدخول"
+  fi
   # ── [2b] كشف العملية العنيدة: wifidog الشغال ماسك GatewayID قديم؟
   # بنسأله بنفسه: إيه الهوية اللي بيحوّل بيها الموبايلات (302 على بورت البوابة)
   # ولو مختلفة عن الإعدادات → قتل قسري (مرة كل 30 دقيقة كحد أقصى)
@@ -358,8 +375,15 @@ if [ $((NOW - TS)) -ge 3600 ] && [ -n "$SRV" ]; then
   INST=$(cat /etc/hotspot-script-version 2>/dev/null | tr -d '[:space:]')
   case "$INST" in ''|*[!0-9]*) INST=0 ;; esac
   LANIP=$(ip -4 addr show br-lan 2>/dev/null | awk '/inet /{split($2,a,"/"); print a[1]; exit}')
-  uclient-fetch -q -T 15 -O /dev/null --no-check-certificate "https://\${SRV}/api/router/report-script?gw_id=\${GW}&inst=\${INST}&wd=\${WFD_WD_VERSION}&lanip=\${LANIP}" 2>/dev/null \
-    || wget -q -T 15 -O /dev/null --no-check-certificate "https://\${SRV}/api/router/report-script?gw_id=\${GW}&inst=\${INST}&wd=\${WFD_WD_VERSION}&lanip=\${LANIP}" 2>/dev/null
+  # ── تشخيصات v9: حالة الراوتر من الداخل — السيرفر يعرف كل حاجة عن بُعد ──
+  WDCLI=$(wdctl status 2>/dev/null | grep -ci 'MAC:')
+  case "$WDCLI" in ''|*[!0-9]*) WDCLI=0 ;; esac
+  IP6OK=0
+  command -v ip6tables >/dev/null 2>&1 && ip6tables -S FORWARD 2>/dev/null | grep -q 'br-lan' && IP6OK=1
+  TMPRESENT=0
+  grep -qi '^[[:space:]]*TrustedMACList' "$CONF" 2>/dev/null && TMPRESENT=1
+  uclient-fetch -q -T 15 -O /dev/null --no-check-certificate "https://\${SRV}/api/router/report-script?gw_id=\${GW}&inst=\${INST}&wd=\${WFD_WD_VERSION}&lanip=\${LANIP}&clients=\${WDCLI}&ip6=\${IP6OK}&tm=\${TMPRESENT}" 2>/dev/null \
+    || wget -q -T 15 -O /dev/null --no-check-certificate "https://\${SRV}/api/router/report-script?gw_id=\${GW}&inst=\${INST}&wd=\${WFD_WD_VERSION}&lanip=\${LANIP}&clients=\${WDCLI}&ip6=\${IP6OK}&tm=\${TMPRESENT}" 2>/dev/null
   F=/tmp/wd_new.sh
   uclient-fetch -q -T 20 -O "$F" --no-check-certificate "https://\${SRV}/api/router/watchdog" 2>/dev/null \\
     || wget -q -T 20 -O "$F" --no-check-certificate "https://\${SRV}/api/router/watchdog" 2>/dev/null
