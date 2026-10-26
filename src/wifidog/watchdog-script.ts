@@ -1,5 +1,10 @@
 // ═══════════════════════════════════════════════════════════
-// 🛡️ مولّد سكربت الحارس الذاتي v2 — hotspot-watchdog
+// 🛡️ مولّد سكربت الحارس الذاتي v8 — hotspot-watchdog
+//
+// v8 = قفل أسباب «النت بيفتح من غير صفحة دخول»:
+//   • تسريب IPv6 (wifidog بيعترض IPv4 بس) → قفل تمرير IPv6 من الشبكة المحلية
+//   • TrustedMACList في الإعدادات → إزالة فورية + إعادة تشغيل
+//   • قواعد فلتر wifidog مفقودة والعملية شغالة → إعادة تشغيل قسرية
 //
 // ده المصدر الوحيد للحارس في السستم (نسخة واحدة لكل الراوترات):
 //   1) سكربت التسطيب الموحد بيحطه على الراوتر (embedded)
@@ -24,11 +29,17 @@
 // (rate-limited كل 30 دقيقة) عشان ميضغطش الراوتر أو الفيد.
 // ═══════════════════════════════════════════════════════════
 
-export const WATCHDOG_VERSION = '7'
+export const WATCHDOG_VERSION = '8'
 
 export function buildWatchdogScript(): string {
   return `#!/bin/sh
-# 🛡️ الحارس الذاتي v7 (WFD_WD_VERSION=7) — فحوصات محلية كل 5 دقايق + مكالمات السيرفر مخنوقة
+# 🛡️ الحارس الذاتي v8 (WFD_WD_VERSION=8) — فحوصات محلية كل 5 دقايق + مكالمات السيرفر مخنوقة
+# v8 إضافات أمنية — أسباب «النت بيفتح من غير صفحة دخول»:
+#   • تسريب IPv6: wifidog بيعترض IPv4 بس — لو المزود مدي IPv6 العميل بيدخل من غير بورتال
+#     → قفل تمرير IPv6 من الشبكة المحلية بالكامل (العملاء يستخدموا IPv4 ويعبروا على البورتال)
+#   • TrustedMACList في wifidog.conf: أجهزة مسموح ليها تخطي البورتال خالص → بتنشال
+#   • قواعد الفلتر بتاعة wifidog اتمسحت (بعد restart للفايروول) والعملية شغالة
+#     → النبض شغال بس الاعتراض ميت = نت ببلاش → إعادة تشغيل قسرية
 # يصلح لوحده: uhttpd / wifidog / قاعدة الاعتراض / باك-إند iptables المعطوب
 # + كشف العملية العنيدة: wifidog ماسك GatewayID قديم بعد تحويل الجهاز
 #   بين الكافيهات → قتل قسري وإعادة تشغيل (سبب "الجهاز غير موجود أو غير نشط")
@@ -37,7 +48,7 @@ export function buildWatchdogScript(): string {
 # + فرض اسم الشبكة من السيرفر كل ساعة — شبكة أمان لو المزامنة وقعت
 # وبيحدّث نفسه من السيرفر كل ساعة — أي إصلاح جديد بيوصل لكل الراوترات لوحده
 # وبيبلّغ عن نسخة السكربت المركّبة كل ساعة — عشان اللوحة تعرف مين محدّث ومين لأ
-WFD_WD_VERSION="7"
+WFD_WD_VERSION="8"
 LOG=/tmp/hotspot_watchdog.log
 CONF=/etc/wifidog.conf
 
@@ -245,6 +256,61 @@ else
   wd_install_iptables
   if command -v iptables >/dev/null 2>&1; then
     wd_frs
+  fi
+fi
+
+# ── [3a-sec] إزالة TrustedMACList — باب تخطي البورتال ──
+# أي أجهزة في القايمة دي بتفتح النت من غير صفحة دخول خالص. تسطيبنا مبيكتبش
+# القايمة دي أبدًا — وجودها معناه بقايا إعداد قديم/يدوي لازم ينشال فورًا
+if grep -qi '^[[:space:]]*TrustedMACList' "$CONF" 2>/dev/null; then
+  sed -i '/^[[:space:]]*TrustedMACList[[:space:]]/d; /^[[:space:]]*TrustedMACList$/d' "$CONF" 2>/dev/null
+  wd_frs
+  wdlog "🔒 TrustedMACList اتنشالت من wifidog.conf (كانت بتسمح لأجهزة تخطي البورتال) — wifidog اتعاد تشغيله"
+fi
+
+# ── [3c] فحص إنفورسمنت الفلتر — النبض شغال بس الاعتراض ميت ──
+# الحالة الكلاسيكية: حد عمل restart للفايروول (أو fw3) بعد ما wifidog اشتغل
+# → قواعد wifidog في جدول filter اتمسحت والعملية فضلت شغالة بتنبض عادي
+# → النتيجة: النت بيفتح من غير صفحة دخول رغم إن كل حاجة شكلها سليم
+if pgrep wifidog >/dev/null 2>&1 && command -v iptables >/dev/null 2>&1; then
+  FLTS=$(iptables -t filter -S 2>/dev/null | grep -ciE 'wifidog|wd_|2060')
+  case "$FLTS" in ''|*[!0-9]*) FLTS=0 ;; esac
+  if [ "$FLTS" -eq 0 ]; then
+    wd_frs
+    sleep 5
+    FLTS=$(iptables -t filter -S 2>/dev/null | grep -ciE 'wifidog|wd_|2060')
+    case "$FLTS" in ''|*[!0-9]*) FLTS=0 ;; esac
+    if [ "$FLTS" -gt 0 ]; then
+      wdlog "🔒 قواعد فلتر wifidog كانت مفقودة (اعتراض ميت = نت ببلاش) → اتعاد بناؤها بإعادة التشغيل ✅"
+    else
+      wdlog "⚠️ قواعد الفلتر لسه ناقصة بعد إعادة التشغيل — هنجرب تاني بعد 5 دقايق"
+    fi
+  fi
+fi
+
+# ── [3d] قفل تسريب IPv6 — أكبر سبب لـ«النت ببلاش من غير صفحة دخول» ──
+# wifidog بيعترض على IPv4 بس. لو المزود (WE) مدي الشبكة IPv6، أي موبايل حديث
+# بيوصل للإنترنت عبر IPv6 وبيتخطى البورتال خالص. الحل: منع تمرير IPv6 من/إلى
+# الشبكة المحلية — العملاء هيرجعوا لـIPv4 ويعبروا على البورتال زي أي عميل جديد
+if command -v ip6tables >/dev/null 2>&1; then
+  ip6tables -C FORWARD -i br-lan -j DROP 2>/dev/null || ip6tables -I FORWARD 1 -i br-lan -j DROP 2>/dev/null
+  ip6tables -C FORWARD -o br-lan -j DROP 2>/dev/null || ip6tables -I FORWARD 1 -o br-lan -j DROP 2>/dev/null
+elif [ -f /etc/init.d/firewall ]; then
+  # ip6tables مش متسطبة — محاولة تسطيب best-effort (مرة كل 30 دقيقة كحد أقصى)
+  TSF=/tmp/wd_ip6_ts
+  NOW=$(date +%s); TS=$(cat "$TSF" 2>/dev/null); case "$TS" in ''|*[!0-9]*) TS=0 ;; esac
+  if [ $((NOW - TS)) -ge 1800 ]; then
+    date +%s > "$TSF"
+    wd_fix_opkg_kernel
+    opkg update >/dev/null 2>&1
+    opkg install ip6tables >/dev/null 2>&1 || opkg install --force-depends ip6tables >/dev/null 2>&1
+    if command -v ip6tables >/dev/null 2>&1; then
+      ip6tables -I FORWARD 1 -i br-lan -j DROP 2>/dev/null
+      ip6tables -I FORWARD 1 -o br-lan -j DROP 2>/dev/null
+      wdlog "🔒 IPv6 للشبكة المحلية اتقفل (كان تسريب نت ببلاش) ✅"
+    else
+      wdlog "⚠️ ip6tables متسطبش — لو المزود مدي IPv6 ممكن تسريب يستمر (هنجرب تاني بعد 30 دقيقة)"
+    fi
   fi
 fi
 
