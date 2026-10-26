@@ -1,5 +1,5 @@
 import { prisma } from '../lib/prisma'
-import { generateVoucherCode } from '../lib/voucher'
+import { generateVoucherCode, isVoucherDepleted } from '../lib/voucher'
 
 export async function handlePortalLogin(body: {
   code: string; mac: string; ip: string; gatewayId: string; hostname?: string
@@ -75,6 +75,25 @@ export async function handlePortalLogin(body: {
     return { success: false, message: 'الكود غير صالح لهذه الشبكة' }
 
   const now = new Date()
+
+  // ═══ حدود الكرت عند الدخول — نفس منطق العدادات بالظبط (دفاع في العمق) ═══
+  // العدادات بتقفل الكرت وقت ما الراوتر يبعت counters — لكن لو حد حاول يدخل
+  // بالكود قبل ما counters توصل (أو لو التحديث فات) الفحص هنا بيرفضه فوراً
+  if (voucher.packageType !== 'UNLIMITED') {
+    const elapsedMin = voucher.usedAt ? (now.getTime() - new Date(voucher.usedAt).getTime()) / 60000 : 0
+    const { depleted, reason } = isVoucherDepleted({
+      ...voucher,
+      dataUsedMB:  (voucher as any).dataUsedMB || 0,
+      timeUsedMin: elapsedMin,
+    })
+    if (depleted) {
+      prisma.voucher.update({
+        where: { id: voucher.id },
+        data:  { status: reason === 'DATA_DEPLETED' ? 'DEPLETED' : 'EXPIRED', timeUsedMin: elapsedMin },
+      }).catch(() => {})
+      return { success: false, message: 'هذا الكود منتهي الصلاحية' }
+    }
+  }
 
   // ═══════════════════════════════════════════════════════════════════════════
   // QR كارت — كل مسح = كود مستقل خاص بالجهاز ده بس
@@ -182,6 +201,19 @@ export async function handlePortalLogin(body: {
     return { success: false, message: 'الكود مستخدم حالياً — الحد الأقصى وصل' }
   }
 
+  // ═══ قفل الجهاز الواحد — إصلاح ثغرة مشاركة الكود (2026-10-26) ═══
+  // الفحص القديم كان بيعد الجلسات النشطة بس: أول ما العميل الأول يمشي
+  // (والجلسة تتقفل بالتايم آوت بعد 30 دقيقة صمت) أي جهاز تاني يفتح نفس الكود.
+  // دلوقتي: الكرت المتفعل بيرجع لصاحبه بس (نفس الـ MAC يستكمل وقته المتبقي)
+  // وأي جهاز جديد مرفوض نهائياً مهما كان وضع الجلسات.
+  if (voucher.maxUsageCount > 0 && voucher.usageCount >= voucher.maxUsageCount) {
+    const sameMacBefore = await prisma.session.count({
+      where: { voucherId: voucher.id, macAddress: mac },
+    })
+    if (sameMacBefore === 0)
+      return { success: false, message: 'هذا الكود مستخدم من قبل — الكود يعمل على جهاز واحد فقط' }
+  }
+
   // -- أنشئ جلسة جديدة -------------------------------------------------------
   const session = await prisma.session.create({
     data: {
@@ -200,7 +232,8 @@ export async function handlePortalLogin(body: {
     data: {
       status:     'ACTIVE',
       usedAt:     voucher.usedAt || now,
-      usageCount: { increment: 1 },
+      // usageCount = عدد الأجهزة اللي فعلت الكرت فعلاً — الاستكمال بنفس MAC مش بيزوده
+      usageCount: voucher.usedAt ? undefined : { increment: 1 },
       deviceId:   voucher.deviceId || device.id,
     },
   })
