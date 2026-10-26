@@ -33,11 +33,12 @@ export async function GET(req: NextRequest) {
       WHERE name IN ('shared_buffers','work_mem','dynamic_shared_memory_type','max_connections')`
 
     const sizes = await prisma.$queryRaw<any[]>`
-      SELECT relname, n_live_tup::bigint AS rows
+      SELECT relname, n_live_tup::int AS rows
       FROM pg_stat_user_tables
       ORDER BY n_live_tup DESC LIMIT 10`
 
-    return NextResponse.json({ ok: true, counts, activity, mem, sizes })
+    const payload = JSON.parse(JSON.stringify({ ok: true, counts, activity, mem, sizes }, (_k, v) => typeof v === 'bigint' ? Number(v) : v))
+    return NextResponse.json(payload)
   } catch (err: any) {
     return NextResponse.json({ ok: false, error: err?.message, code: err?.code }, { status: 500 })
   }

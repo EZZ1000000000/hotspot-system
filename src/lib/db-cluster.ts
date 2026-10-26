@@ -55,6 +55,9 @@ export function isFatalDbError(e: any): boolean {
   if (/\b(ENOTFOUND|ECONNREFUSED|ETIMEDOUT|ECONNRESET|EAI_AGAIN)\b/.test(msg)) return true
   if (/Can't reach database server/i.test(msg)) return true
   if (/Server has closed the connection|Connection terminated/i.test(msg)) return true
+  // استنفاد ذاكرة الكومبيوت (pg_dynshmem) = القاعدة نفسها عطشانة — لازم قلب
+  // (حصل فعلياً 2026-10-26: طباعة 90+ ألف كارت دفعة واحدة غرقت /dev/shm)
+  if (/could not resize shared memory|pg_dynshmem|No space left on device/i.test(msg)) return true
   return false
 }
 
