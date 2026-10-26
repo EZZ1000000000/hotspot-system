@@ -4,6 +4,7 @@ import bcrypt from 'bcryptjs'
 
 // GET — جلب بيانات الأدمن
 export async function GET(req: NextRequest) {
+  try {
   const adminId = req.nextUrl.searchParams.get('adminId')
   if (!adminId) return NextResponse.json({ error: 'missing adminId' }, { status: 400 })
 
@@ -20,6 +21,10 @@ export async function GET(req: NextRequest) {
 
   if (!admin) return NextResponse.json({ error: 'not found' }, { status: 404 })
   return NextResponse.json(admin)
+  } catch (err: any) {
+    console.error('[profile GET]', err)
+    return NextResponse.json({ error: err?.message || 'ERR', code: err?.code, cause: String(err?.cause?.message || err?.cause || '') }, { status: 500 })
+  }
 }
 
 // PATCH — تحديث البيانات + كلمة المرور
