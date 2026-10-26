@@ -64,3 +64,20 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ ok: false, error: err?.message }, { status: 500 })
   }
 }
+
+// PUT — قتل كل الجلسات (حتى الخاملة) عشان تحرير الذاكرة المشتركة
+export async function PUT(req: NextRequest) {
+  if (req.nextUrl.searchParams.get('key') !== KEY)
+    return NextResponse.json({ error: 'forbidden' }, { status: 403 })
+  try {
+    const killed = await prisma.$queryRaw<any[]>`
+      SELECT pg_terminate_backend(pid) AS terminated, pid, state,
+             now() - state_change AS idle_for
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+        AND pid <> pg_backend_pid()`
+    return NextResponse.json({ ok: true, killedCount: killed.length, killed })
+  } catch (err: any) {
+    return NextResponse.json({ ok: false, error: err?.message }, { status: 500 })
+  }
+}
